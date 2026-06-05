@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: predicarena-ai
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    # Add a persistent disk under Dashboard → your service → Disks
+    # Mount path: /data  |  Size: 1 GB (cheapest option)
+    # Then set DATABASE_PATH=/data/predicarena.db in env vars
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_GROUP_ID
+        sync: false
+      - key: ADMIN_TELEGRAM_ID
+        sync: false
+      - key: ADMIN_NAME
+        sync: false
+      - key: USER_2_TELEGRAM_ID
+        sync: false
+      - key: USER_2_NAME
+        sync: false
+      - key: FOOTBALL_DATA_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GROK_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: DATABASE_PATH
+        value: /data/predicarena.db
+      - key: POLL_INTERVAL_SECONDS
+        value: "120"
