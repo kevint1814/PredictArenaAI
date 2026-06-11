@@ -1165,6 +1165,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "Tell the user the schedule hasn't been synced yet."
         )
 
+    live_matches = db.get_live_matches()
+    if live_matches:
+        ctx_lines.append("Currently LIVE (in progress right now):")
+        for m in live_matches:
+            ctx_lines.append(f"  • {m['home_team']} vs {m['away_team']} — LIVE (exact score unknown, search for it)")
+
     if recent:
         ctx_lines.append("Recent results:")
         for m in recent:
@@ -1196,6 +1202,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     elif intent == "search":
         search_q = _re_r.sub(r'\barena\b', '', text, flags=_re_r.IGNORECASE).strip(" ,!?")
+
+        # If it's a score/live query, pin the search to actual live matches so
+        # Tavily returns the right game(s) — especially important when 2 are on at once.
+        _SCORE_WORDS = {"score", "result", "winning", "goals", "happening", "how many"}
+        if any(w in text.lower() for w in _SCORE_WORDS):
+            _live_now = db.get_live_matches()
+            if _live_now:
+                _user_named_team = any(
+                    m["home_team"].lower() in text.lower() or m["away_team"].lower() in text.lower()
+                    for m in _live_now
+                )
+                if not _user_named_team:
+                    # Generic score question — search all live matches explicitly
+                    _match_str = " | ".join(
+                        f"{m['home_team']} vs {m['away_team']}" for m in _live_now
+                    )
+                    search_q = f"{_match_str} live score 2026 FIFA World Cup"
+                else:
+                    # User named a team — narrow to that match only
+                    for m in _live_now:
+                        if (m["home_team"].lower() in text.lower()
+                                or m["away_team"].lower() in text.lower()):
+                            search_q = (
+                                f"{m['home_team']} vs {m['away_team']} "
+                                f"live score 2026 FIFA World Cup"
+                            )
+                            break
 
         # Vague follow-up? ("who are there?" / "and the squad?" etc.)
         # Enrich with context from the most recent substantial user message in history.
