@@ -48,9 +48,10 @@ class _HealthHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _start_health_server(port: int) -> None:
+def _start_health_server(port: int, ready: threading.Event) -> None:
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     logger.info("Health server listening on port %d", port)
+    ready.set()   # signal: socket is bound, Render can detect it now
     server.serve_forever()
 
 
@@ -82,10 +83,12 @@ def build_app() -> Application:
 def main() -> None:
     init_db()
 
-    # Bind to PORT in a daemon thread so Render's health check gets 200.
-    # (daemon=True means it dies automatically when the main thread exits.)
+    # Bind to PORT and wait until the socket is actually listening before
+    # proceeding — this ensures Render's port scanner detects it in time.
     port = int(os.getenv("PORT", "10000"))
-    threading.Thread(target=_start_health_server, args=(port,), daemon=True).start()
+    ready = threading.Event()
+    threading.Thread(target=_start_health_server, args=(port, ready), daemon=True).start()
+    ready.wait()   # block until HTTPServer.__init__ has bound the socket
 
     # Build bot and run in polling mode.
     # run_polling() manages its own asyncio event loop — the job queue
