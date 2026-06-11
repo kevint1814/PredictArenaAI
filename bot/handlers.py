@@ -1203,48 +1203,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif intent == "search":
         search_q = _re_r.sub(r'\barena\b', '', text, flags=_re_r.IGNORECASE).strip(" ,!?")
 
-        # If it's a score/live query, pin the search to actual live matches so
-        # Tavily returns the right game(s) — especially important when 2 are on at once.
+        # Live score query — call football-data.org directly (authoritative, beats web search)
         _SCORE_WORDS = {"score", "result", "winning", "goals", "happening", "how many"}
+        _live_score_handled = False
         if any(w in text.lower() for w in _SCORE_WORDS):
             _live_now = db.get_live_matches()
             if _live_now:
-                _user_named_team = any(
-                    m["home_team"].lower() in text.lower() or m["away_team"].lower() in text.lower()
-                    for m in _live_now
-                )
-                if not _user_named_team:
-                    # Generic score question — search all live matches explicitly
-                    _match_str = " | ".join(
-                        f"{m['home_team']} vs {m['away_team']}" for m in _live_now
+                from services.football import get_live_score as _get_live_score
+                _score_lines = []
+                for m in _live_now:
+                    _api_id = m.get("api_match_id")
+                    if not _api_id:
+                        _score_lines.append(
+                            f"{m['home_team']} vs {m['away_team']} — LIVE (no API ID)"
+                        )
+                        continue
+                    _s = await asyncio.to_thread(_get_live_score, _api_id)
+                    if _s:
+                        _score_lines.append(
+                            f"{m['home_team']} {_s['home_score']}–{_s['away_score']} {m['away_team']}"
+                        )
+                    else:
+                        _score_lines.append(
+                            f"{m['home_team']} vs {m['away_team']} — LIVE (fetch failed)"
+                        )
+                if _score_lines:
+                    research_data = (
+                        "Current live scores (football-data.org, ~1–2 min delay):\n"
+                        + "\n".join(_score_lines)
                     )
-                    search_q = f"{_match_str} live score 2026 FIFA World Cup"
-                else:
-                    # User named a team — narrow to that match only
-                    for m in _live_now:
-                        if (m["home_team"].lower() in text.lower()
-                                or m["away_team"].lower() in text.lower()):
-                            search_q = (
-                                f"{m['home_team']} vs {m['away_team']} "
-                                f"live score 2026 FIFA World Cup"
-                            )
-                            break
+                    logger.info("Live score fetch: %s", research_data)
+                    _live_score_handled = True
 
-        # Vague follow-up? ("who are there?" / "and the squad?" etc.)
-        # Enrich with context from the most recent substantial user message in history.
-        if len(search_q.split()) < 7:
-            for h in reversed(history_rows[-8:]):
-                if (h["role"] == "user"
-                        and h["content"].strip() != text.strip()
-                        and len(h["content"].split()) > 4):
-                    prev = _re_r.sub(r'\barena\b', '', h["content"], flags=_re_r.IGNORECASE).strip()
-                    search_q = f"{prev} — {search_q}"
-                    break
+        if not _live_score_handled:
+            # Vague follow-up? ("who are there?" / "and the squad?" etc.)
+            # Enrich with context from the most recent substantial user message in history.
+            if len(search_q.split()) < 7:
+                for h in reversed(history_rows[-8:]):
+                    if (h["role"] == "user"
+                            and h["content"].strip() != text.strip()
+                            and len(h["content"].split()) > 4):
+                        prev = _re_r.sub(r'\barena\b', '', h["content"], flags=_re_r.IGNORECASE).strip()
+                        search_q = f"{prev} — {search_q}"
+                        break
 
-        logger.info("Research: Tavily search → %r", search_q[:120])
-        research_data = await asyncio.to_thread(web_search, search_q)
-        logger.info("Research: result length = %d chars",
-                    len(research_data) if research_data else 0)
+            logger.info("Research: Tavily search → %r", search_q[:120])
+            research_data = await asyncio.to_thread(web_search, search_q)
+            logger.info("Research: result length = %d chars",
+                        len(research_data) if research_data else 0)
 
     # ── Generate response ───────────────────────────────────────────────────────
     from services.ai import chat_response, extract_memory

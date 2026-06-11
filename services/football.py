@@ -94,6 +94,29 @@ def get_upcoming_matches(competition: str = WC_COMPETITION_CODE, season: int = W
     return result
 
 
+def get_live_score(api_match_id: int) -> Optional[dict]:
+    """
+    Fetch the current score of a live (in-progress) match directly from football-data.org.
+    Returns {"home_score": int, "away_score": int} or None on failure.
+    Note: free tier may have a 1–2 min delay on live updates.
+    """
+    if not FOOTBALL_DATA_KEY:
+        return None
+    try:
+        data      = _get(f"matches/{api_match_id}")
+        score_obj = data.get("score") or {}
+        ft        = score_obj.get("fullTime") or {}
+        home_s    = ft.get("home")
+        away_s    = ft.get("away")
+        return {
+            "home_score": int(home_s) if home_s is not None else 0,
+            "away_score": int(away_s) if away_s is not None else 0,
+        }
+    except Exception as exc:
+        logger.warning("Could not fetch live score for match %d: %s", api_match_id, exc)
+        return None
+
+
 def get_match_result(match_id: int) -> Optional[dict]:
     """
     Poll football-data.org for a match's current status and score.
