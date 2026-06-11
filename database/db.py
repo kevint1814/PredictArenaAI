@@ -540,12 +540,12 @@ def add_chat_message(chat_id: int, role: str, content: str, speaker: str = None)
             "INSERT INTO chat_history (chat_id, role, speaker, content) VALUES (?, ?, ?, ?)",
             (chat_id, role, speaker, content),
         )
-        # Keep only the last 40 rows per chat_id
+        # Keep only the last 80 rows per chat_id
         conn.execute(
             """DELETE FROM chat_history
                WHERE chat_id = ? AND id NOT IN (
                    SELECT id FROM chat_history WHERE chat_id = ?
-                   ORDER BY id DESC LIMIT 40
+                   ORDER BY id DESC LIMIT 80
                )""",
             (chat_id, chat_id),
         )
@@ -573,10 +573,10 @@ def add_bot_memory(memory: str) -> None:
         ).fetchone()
         if not existing:
             conn.execute("INSERT INTO bot_memory (memory) VALUES (?)", (memory,))
-            # Keep only the last 60 memories
+            # Keep only the last 100 memories
             conn.execute(
                 "DELETE FROM bot_memory WHERE id NOT IN "
-                "(SELECT id FROM bot_memory ORDER BY id DESC LIMIT 60)"
+                "(SELECT id FROM bot_memory ORDER BY id DESC LIMIT 100)"
             )
 
 

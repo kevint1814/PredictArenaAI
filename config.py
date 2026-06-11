@@ -18,6 +18,9 @@ USER_2_NAME: str = os.getenv("USER_2_NAME", "Player 2")
 # football-data.org — free tier, no daily cap, register at football-data.org
 FOOTBALL_DATA_KEY: str = os.getenv("FOOTBALL_DATA_KEY", "")
 
+# Tavily — production web search for Arena (app.tavily.com — free: 1000/month)
+TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+
 # AI provider — set at least one of these.
 # Priority: OPENAI > GROK > GEMINI
 # OpenAI:  gpt-4o-mini by default (cheap + fast)

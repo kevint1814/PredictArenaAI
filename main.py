@@ -9,6 +9,8 @@ import asyncio
 import logging
 import os
 
+from aiohttp import web
+from telegram import Update
 from telegram.ext import Application
 
 from config import (
@@ -51,6 +53,69 @@ def build_app() -> Application:
     )
 
 
+async def _run_webhook(app: Application, port: int) -> None:
+    """
+    Webhook mode with a proper /health endpoint for UptimeRobot.
+
+    PTB's built-in run_webhook() only serves /webhook and returns 404/403
+    for everything else — UptimeRobot would think the service is down.
+    Instead we run our own aiohttp server so we control all routes.
+    """
+
+    # ── aiohttp route handlers ────────────────────────────────────────────────
+
+    async def handle_webhook(request: web.Request) -> web.Response:
+        """Receive updates from Telegram and feed them into PTB."""
+        secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if secret != WEBHOOK_SECRET:
+            logger.warning("Webhook request with wrong secret token — ignored")
+            return web.Response(status=403)
+        try:
+            data   = await request.json()
+            update = Update.de_json(data, app.bot)
+            await app.update_queue.put(update)
+        except Exception as exc:
+            logger.warning("Failed to parse webhook update: %s", exc)
+        return web.Response(status=200)
+
+    async def handle_health(_: web.Request) -> web.Response:
+        """UptimeRobot pings this — must return 200."""
+        return web.Response(text="OK")
+
+    # ── Build the aiohttp app ─────────────────────────────────────────────────
+    aio_app = web.Application()
+    aio_app.router.add_get("/",        handle_health)
+    aio_app.router.add_get("/health",  handle_health)
+    aio_app.router.add_post("/webhook", handle_webhook)
+
+    runner = web.AppRunner(aio_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+
+    # ── Start PTB (job queue, dispatcher, post_init) then the web server ──────
+    async with app:
+        await app.start()   # starts job queue scheduler
+
+        await app.bot.set_webhook(
+            url=f"{WEBHOOK_URL.rstrip('/')}/webhook",
+            secret_token=WEBHOOK_SECRET,
+            drop_pending_updates=True,
+        )
+        logger.info("Webhook registered: %s/webhook", WEBHOOK_URL.rstrip("/"))
+
+        await site.start()
+        logger.info("HTTP server listening on port %d", port)
+
+        try:
+            # Run until the process is killed (Render/systemd sends SIGTERM)
+            await asyncio.Event().wait()
+        finally:
+            logger.info("Shutting down…")
+            await app.bot.delete_webhook()
+            await app.stop()
+            await runner.cleanup()
+
+
 def main() -> None:
     init_db()
 
@@ -58,25 +123,22 @@ def main() -> None:
     register_handlers(app)
 
     if WEBHOOK_URL:
-        # ── Webhook mode (Render / VPS) ───────────────────────────────────────
+        # ── Webhook mode (Render) ─────────────────────────────────────────────
         port = int(os.getenv("PORT", "10000"))
         logger.info("Starting in webhook mode — port %d", port)
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path="webhook",
-            secret_token=WEBHOOK_SECRET,
-            webhook_url=f"{WEBHOOK_URL.rstrip('/')}/webhook",
-        )
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_run_webhook(app, port))
+        except KeyboardInterrupt:
+            pass
     else:
         # ── Polling mode (local development) ─────────────────────────────────
         logger.info("Starting in polling mode (local dev)")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    # Python 3.12+ no longer auto-creates an event loop — set one explicitly
-    # before PTB's run_polling/run_webhook takes over.
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     main()

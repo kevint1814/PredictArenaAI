@@ -680,6 +680,77 @@ _TEST_HOME = "Test United"
 _TEST_AWAY = "Mock City"
 
 
+async def cmd_forcedm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin: immediately send prediction DMs for all upcoming matches in the next 48 hours,
+    regardless of the prediction_dm_sent flag.
+    Useful when the automatic 24h DM failed (e.g. user hadn't /start'd the bot in DM yet).
+    """
+    if not is_admin(update.effective_user.id):
+        return
+    if not await assert_private(update):
+        return
+
+    # Wider window than the automatic job so admin can force-send for any upcoming match
+    matches = db.get_upcoming_matches(limit=20)
+    if not matches:
+        await update.message.reply_text("No upcoming matches in the database.")
+        return
+
+    all_users = db.get_all_users()
+    total_sent = 0
+    total_skip = 0
+    lines = ["📨 *Force-sending prediction DMs…*\n"]
+
+    for match in matches:
+        ko     = kickoff_dt(match)
+        dt_str = ko.strftime("%d %b, %H:%M UTC")
+        stage  = STAGE_LABELS.get(match["stage"], match["stage"])
+        from config import STAGE_POINTS, STAGE_PENALTIES
+        pts    = STAGE_POINTS[match["stage"]]
+        pen    = STAGE_PENALTIES[match["stage"]]
+        sent_names = []
+        skip_names = []
+
+        for user in all_users:
+            pred = db.get_user_prediction_for_match(user["id"], match["id"])
+            if pred:
+                skip_names.append(user["name"])
+                continue
+            try:
+                from bot.keyboards import prediction_choice_keyboard as _pkb
+                await context.bot.send_message(
+                    user["telegram_id"],
+                    f"⚽ *{match['home_team']} vs {match['away_team']}*\n"
+                    f"📍 {stage}  |  🗓 {dt_str}\n"
+                    f"Correct: *+{pts} pts*  |  Missed: *{pen} pts*\n\n"
+                    f"Tap to pick your winner 👇",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=_pkb(match["id"], match["home_team"], match["away_team"], match["stage"]),
+                )
+                sent_names.append(user["name"])
+                total_sent += 1
+            except Exception as exc:
+                skip_names.append(f"{user['name']} (failed: {exc})")
+                total_skip += 1
+
+        # Always mark as sent once we've actively tried (prevents auto-job re-firing)
+        db.mark_prediction_dm_sent(match["id"])
+
+        result_parts = []
+        if sent_names:
+            result_parts.append(f"✅ DM'd: {', '.join(sent_names)}")
+        if skip_names:
+            result_parts.append(f"⏭ Skipped: {', '.join(skip_names)}")
+        lines.append(
+            f"⚽ *{match['home_team']} vs {match['away_team']}* ({dt_str})\n"
+            + "  " + "  |  ".join(result_parts)
+        )
+
+    lines.append(f"\n_Total: {total_sent} sent, {total_skip} skipped/failed._")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Admin: spin up a dummy match kicking off in 5 minutes to verify the full bot flow.
@@ -853,7 +924,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = message.from_user
     chat = message.chat
 
-    # ── Group: only respond when @mentioned or replied to ──────────────────────
+    # Private game — only the two configured players can chat with Arena
+    if user.id not in ALLOWED_USER_IDS:
+        return
+
+    # ── Group: only respond when @mentioned, replied to, or called by name ───────
+    _WAKE_WORDS = {"arena"}   # custom name — add more here if needed
     if chat.type != "private":
         bot_me          = await context.bot.get_me()
         mention_tag     = f"@{bot_me.username}"
@@ -863,9 +939,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             and message.reply_to_message.from_user is not None
             and message.reply_to_message.from_user.id == context.bot.id
         )
-        if not bot_mentioned and not replied_to_bot:
+        name_triggered  = any(
+            text.lower().startswith(w) or f" {w}" in text.lower() or f",{w}" in text.lower()
+            for w in _WAKE_WORDS
+        )
+        if not bot_mentioned and not replied_to_bot and not name_triggered:
             return
-        text = text.replace(mention_tag, "").strip()
+        # Strip @mention and wake word from text so AI sees a clean message
+        text = text.replace(mention_tag, "")
+        for w in _WAKE_WORDS:
+            import re as _re2
+            text = _re2.sub(rf'\b{w}\b', '', text, flags=_re2.IGNORECASE)
+        text = text.strip(" ,!?")
 
     if not text:
         return
@@ -877,7 +962,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     import re as _re
     _MATCH_QUERY_WORDS = {"upcoming", "fixture", "fixtures", "schedule", "matches",
                           "next match", "when is", "what match", "the match", "match on",
-                          "match today", "match tomorrow", "match on"}
+                          "match today", "match tomorrow", "first match", "first game",
+                          "next game", "when does", "kick off", "kickoff", "kick-off",
+                          "start time", "starting time", "games on",
+                          "what time does", "when do they play"}
     _MONTH_MAP = {
         "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
         "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
@@ -886,42 +974,156 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     }
     text_lower = text.lower()
     if any(w in text_lower for w in _MATCH_QUERY_WORDS):
-        # Try to extract a specific date from the query (e.g. "15th june", "june 15")
+        # Extract a specific date — month must be adjacent to day number to avoid
+        # false positives from everyday words like "may" ("I may watch the match").
         date_filter = None
-        day_match  = _re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', text_lower)
-        month_match = next(
-            ((abbr, num) for abbr, num in _MONTH_MAP.items() if abbr in text_lower), None
+        _day_str: str | None = None
+        _mon_str: str | None = None
+        _mp = (
+            r"january|february|march|april|may|june|july|august"
+            r"|september|october|november|december"
+            r"|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec"
         )
-        if day_match and month_match:
-            date_filter = (int(day_match.group(1)), month_match[1])  # (day, month)
+        _d_dmy = _re.search(
+            rf'\b(\d{{1,2}})(?:st|nd|rd|th)?[\s\-/]+(?:of\s+)?({_mp})\b',
+            text_lower,
+        )
+        _d_mdy = _re.search(
+            rf'\b({_mp})[\s\-/]+(\d{{1,2}})(?:st|nd|rd|th)?\b',
+            text_lower,
+        )
+        if _d_dmy:
+            _day_str, _mon_str = _d_dmy.group(1), _d_dmy.group(2)
+        elif _d_mdy:
+            _mon_str, _day_str = _d_mdy.group(1), _d_mdy.group(2)
+        if _day_str and _mon_str:
+            _mn = _MONTH_MAP.get(_mon_str[:3])
+            if _mn:
+                date_filter = (int(_day_str), _mn)
 
         all_upcoming = db.get_upcoming_matches(limit=60)
         if all_upcoming:
-            if date_filter:
-                day, month = date_filter
-                filtered = [
-                    m for m in all_upcoming
-                    if kickoff_dt(m).month == month and kickoff_dt(m).day == day
-                ]
-                display = filtered if filtered else all_upcoming[:8]
-                header  = (
-                    f"📅 *Matches on {day_match.group(1)} {month_match[0].capitalize()}*\n"
-                    if filtered else "📅 *Upcoming Matches* _(no matches found for that date)_\n"
-                )
-            else:
-                display = all_upcoming[:8]
-                header  = "📅 *Upcoming Matches*\n"
+            # ── Team name filter ──────────────────────────────────────────────
+            # Build map of team names in the DB (lowercase → original casing)
+            known_teams: dict[str, str] = {}
+            for _m in all_upcoming:
+                known_teams[_m["home_team"].lower()] = _m["home_team"]
+                known_teams[_m["away_team"].lower()] = _m["away_team"]
 
-            lines = [header]
-            for m in display:
-                dt = kickoff_dt(m)
-                lines.append(
-                    f"⚽ *{m['home_team']}* vs *{m['away_team']}*\n"
-                    f"   🗓 {dt.strftime('%d %b  %H:%M UTC')}  |  "
-                    f"{STAGE_LABELS.get(m['stage'], m['stage'])}"
-                )
-            await message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
-            return
+            # Find a team name from the DB mentioned in the query (longest match wins)
+            team_filter_lower: str | None = None
+            team_filter_orig:  str | None = None
+            for _tl, _to in sorted(known_teams.items(), key=lambda x: -len(x[0])):
+                if _tl in text_lower:
+                    team_filter_lower = _tl
+                    team_filter_orig  = _to
+                    break
+
+            # Detect if query asks about a specific entity NOT in the DB (e.g. "croatia")
+            # — if so, fall through to AI so it can research the answer.
+            _STOP_WORDS = {
+                "the", "a", "an", "it", "its", "they", "we", "our", "their",
+                "this", "that", "first", "next", "any", "each", "every", "my"
+            }
+            _team_patterns = [
+                r"when does (\w+) play",
+                r"does (\w+) play",
+                r"(\w+)'s (?:next|first|upcoming)?\s*match",
+                r"(\w+)'s (?:next|first|upcoming)?\s*game",
+            ]
+            specific_word = None
+            for _pat in _team_patterns:
+                _pm = _re.search(_pat, text_lower)
+                if _pm:
+                    candidate = _pm.group(1)
+                    if candidate not in _STOP_WORDS:
+                        specific_word = candidate
+                    break
+
+            # If a specific team word found AND it's not in the DB → let AI research it
+            if specific_word and not any(specific_word in _tl for _tl in known_teams):
+                pass  # fall through to AI
+            else:
+                # ── Apply team / date filters ──────────────────────────────────
+                if team_filter_lower:
+                    team_matches = [
+                        m for m in all_upcoming
+                        if team_filter_lower in m["home_team"].lower()
+                        or team_filter_lower in m["away_team"].lower()
+                    ]
+                    display = team_matches[:8] if team_matches else all_upcoming[:8]
+                    header  = (
+                        f"📅 *{team_filter_orig}'s upcoming matches*\n"
+                        if team_matches else "📅 *Upcoming Matches*\n"
+                    )
+                    # Layer date filter on top of team filter
+                    if date_filter and team_matches:
+                        day, month = date_filter
+                        by_date = [
+                            m for m in team_matches
+                            if kickoff_dt(m).month == month and kickoff_dt(m).day == day
+                        ]
+                        if by_date:
+                            display = by_date
+                elif date_filter:
+                    day, month = date_filter
+                    filtered = [
+                        m for m in all_upcoming
+                        if kickoff_dt(m).month == month and kickoff_dt(m).day == day
+                    ]
+                    display = filtered if filtered else all_upcoming[:8]
+                    header  = (
+                        f"📅 *Matches on {_day_str} {_mon_str.capitalize()}*\n"
+                        if filtered else "📅 *Upcoming Matches* _(no matches found for that date)_\n"
+                    )
+                else:
+                    display = all_upcoming[:8]
+                    header  = "📅 *Upcoming Matches*\n"
+
+                # ── Timezone detection — word-boundary match for short codes ──
+                # Prevents "la" hitting "play", "croatia", "la liga", etc.
+                from services.research import _TZ_MAP as _tz_map
+                from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+                detected_tz    = None
+                detected_label = None
+                for _city, _tz in sorted(_tz_map.items(), key=lambda x: -len(x[0])):
+                    if len(_city) <= 4:
+                        # Short codes must be whole words, not substrings
+                        if _re.search(rf'\b{_re.escape(_city)}\b', text_lower):
+                            detected_tz    = _tz
+                            detected_label = _city.title()
+                            break
+                    elif _city in text_lower:
+                        detected_tz    = _tz
+                        detected_label = _city.title()
+                        break
+
+                lines = [header]
+                for m in display:
+                    dt = kickoff_dt(m)
+                    if detected_tz:
+                        try:
+                            dt_local   = dt.astimezone(ZoneInfo(detected_tz))
+                            time_str   = (
+                                f"{dt_local.strftime('%d %b  %H:%M')} {detected_label} "
+                                f"({dt.strftime('%H:%M')} UTC)"
+                            )
+                        except (ZoneInfoNotFoundError, Exception):
+                            time_str = dt.strftime('%d %b  %H:%M UTC')
+                    else:
+                        time_str = dt.strftime('%d %b  %H:%M UTC')
+                    lines.append(
+                        f"⚽ *{m['home_team']}* vs *{m['away_team']}*\n"
+                        f"   🗓 {time_str}  |  "
+                        f"{STAGE_LABELS.get(m['stage'], m['stage'])}"
+                    )
+                # Store the exchange in history so follow-up questions (e.g. "what
+                # time is that in KL?") have context about what was just shown.
+                db.add_chat_message(chat.id, "user", text, speaker=user.first_name)
+                db.add_chat_message(chat.id, "bot", "\n".join(lines), speaker="Arena")
+                await message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+                return
         # No matches in DB — fall through to AI so it can say why
 
     # ── Build tournament context for the AI ────────────────────────────────────
@@ -974,39 +1176,63 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     tournament_context = "\n".join(ctx_lines)
 
     # ── Load memory + conversation history ─────────────────────────────────────
-    memories     = db.get_bot_memories(limit=12)
-    history_rows = db.get_chat_history(chat.id, limit=20)
+    memories     = db.get_bot_memories(limit=20)
+    history_rows = db.get_chat_history(chat.id, limit=30)
     history      = [{"role": h["role"], "speaker": h["speaker"], "content": h["content"]}
                     for h in history_rows]
 
     # Store incoming message BEFORE generating response so history is current
     db.add_chat_message(chat.id, "user", text, speaker=user.first_name)
 
+    # ── Research: fetch real data for factual queries ───────────────────────────
+    from services.research import detect_research_intent, get_city_time, web_search
+    import re as _re_r
+    research_data: str | None = None
+    intent = detect_research_intent(text)
+
+    if intent == "time":
+        research_data = await asyncio.to_thread(get_city_time, text)
+        logger.info("Research: time lookup for %r → %s", text[:60], research_data or "no match")
+
+    elif intent == "search":
+        search_q = _re_r.sub(r'\barena\b', '', text, flags=_re_r.IGNORECASE).strip(" ,!?")
+
+        # Vague follow-up? ("who are there?" / "and the squad?" etc.)
+        # Enrich with context from the most recent substantial user message in history.
+        if len(search_q.split()) < 7:
+            for h in reversed(history_rows[-8:]):
+                if (h["role"] == "user"
+                        and h["content"].strip() != text.strip()
+                        and len(h["content"].split()) > 4):
+                    prev = _re_r.sub(r'\barena\b', '', h["content"], flags=_re_r.IGNORECASE).strip()
+                    search_q = f"{prev} — {search_q}"
+                    break
+
+        logger.info("Research: Tavily search → %r", search_q[:120])
+        research_data = await asyncio.to_thread(web_search, search_q)
+        logger.info("Research: result length = %d chars",
+                    len(research_data) if research_data else 0)
+
     # ── Generate response ───────────────────────────────────────────────────────
     from services.ai import chat_response, extract_memory
     reply = await asyncio.to_thread(
-        chat_response, text, user.first_name, tournament_context, memories, history
+        chat_response, text, user.first_name, tournament_context, memories, history,
+        research_data=research_data,
     )
 
     if not reply:
         reply = "Something went wrong on my end — try again in a sec."
 
-    db.add_chat_message(chat.id, "bot", reply, speaker="PredictArena AI")
+    db.add_chat_message(chat.id, "bot", reply, speaker="Arena")
     await message.reply_text(reply)
 
-    # ── Background memory extraction (non-blocking, every 3rd exchange) ────────
-    # Throttled to avoid burning API quota on every single message.
-    count_key = f"chat_msg_count_{chat.id}"
-    msg_count = context.application.bot_data.get(count_key, 0) + 1
-    context.application.bot_data[count_key] = msg_count
-
-    if msg_count % 3 == 0:
-        recent_history = db.get_chat_history(chat.id, limit=6)
-        if len(recent_history) >= 2:
-            snippet = "\n".join(
-                f"{h['speaker'] or 'Bot'}: {h['content']}" for h in recent_history
-            )
-            asyncio.create_task(_store_memory_if_notable(snippet))
+    # ── Background memory extraction — runs on every exchange ──────────────────
+    recent_history = db.get_chat_history(chat.id, limit=8)
+    if len(recent_history) >= 2:
+        snippet = "\n".join(
+            f"{h['speaker'] or 'Arena'}: {h['content']}" for h in recent_history
+        )
+        asyncio.create_task(_store_memory_if_notable(snippet))
 
 
 # ── Admin: reset all data ──────────────────────────────────────────────────────
@@ -1058,6 +1284,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("syncmatches",  cmd_syncmatches))
     app.add_handler(CommandHandler("regrade",      cmd_regrade))
     app.add_handler(CommandHandler("users",        cmd_users))
+    app.add_handler(CommandHandler("forcedm",      cmd_forcedm))
     app.add_handler(CommandHandler("test",         cmd_test))
     app.add_handler(CommandHandler("testsuccess",  cmd_testsuccess))
     app.add_handler(CommandHandler("deletematch",  cmd_deletematch))

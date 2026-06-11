@@ -42,7 +42,61 @@ async def job_send_prediction_prompts(context: ContextTypes.DEFAULT_TYPE) -> Non
     For any match kicking off within the next 24 hours where the prediction DM
     hasn't been sent yet, DM every user who hasn't predicted with the match details
     and an inline Home/Draw/Away keyboard — no /predict needed.
+
+    Robustness: if ALL user DMs fail (e.g. users haven't /start'd the bot in DM yet),
+    the match is NOT marked as sent so the next cycle retries. If some succeeded and
+    some failed, the failed users are stored in bot_data for retry on the next cycle.
     """
+    # ── Retry previously-failed individual user DMs ───────────────────────────
+    # Key is "{telegram_id}_{match_id}" so multiple matches can each have their
+    # own retry entry without colliding.
+    retry_map: dict = context.application.bot_data.get("pred_dm_retry", {})
+    for _rkey, info in list(retry_map.items()):
+        tid = info["telegram_id"]
+        if info["attempts"] >= 5:
+            logger.info("Giving up on retry DM for user %d match %d after 5 attempts", tid, info["match_id"])
+            del retry_map[_rkey]
+            continue
+        # Don't retry if the match has already kicked off
+        try:
+            ko_str = info["kickoff_utc"].replace(" ", "T")
+            if not ko_str.endswith("Z") and "+" not in ko_str:
+                ko_str += "+00:00"
+            ko = datetime.fromisoformat(ko_str)
+            if ko.tzinfo is None:
+                ko = ko.replace(tzinfo=timezone.utc)
+        except Exception:
+            del retry_map[_rkey]
+            continue
+        if ko <= datetime.now(timezone.utc):
+            del retry_map[_rkey]
+            continue
+        # Skip if user now has a prediction
+        from database.db import get_user_by_telegram_id, get_user_prediction_for_match
+        db_user = get_user_by_telegram_id(tid)
+        if db_user and get_user_prediction_for_match(db_user["id"], info["match_id"]):
+            del retry_map[_rkey]
+            continue
+        try:
+            await context.bot.send_message(
+                tid,
+                f"⚽ *{info['home_team']} vs {info['away_team']}*\n"
+                f"📍 {info['stage_label']}  |  🗓 {ko.strftime('%d %b, %H:%M UTC')}\n"
+                f"Correct: *+{info['pts']} pts*  |  Missed: *{info['pen']} pts*\n\n"
+                f"Tap to pick your winner 👇",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=prediction_choice_keyboard(
+                    info["match_id"], info["home_team"], info["away_team"], info["stage"]
+                ),
+            )
+            logger.info("Retry DM succeeded for user %d, match %d", tid, info["match_id"])
+            del retry_map[_rkey]
+        except Exception as exc:
+            info["attempts"] += 1
+            logger.warning("Retry DM attempt %d failed for user %d: %s", info["attempts"], tid, exc)
+    context.application.bot_data["pred_dm_retry"] = retry_map
+
+    # ── Send fresh prediction DMs for new matches ─────────────────────────────
     matches = db.get_matches_needing_prediction_dm()
     if not matches:
         return
@@ -56,10 +110,14 @@ async def job_send_prediction_prompts(context: ContextTypes.DEFAULT_TYPE) -> Non
         pts     = STAGE_POINTS[match["stage"]]
         pen     = STAGE_PENALTIES[match["stage"]]
 
+        sent_to:   set[int] = set()   # telegram_ids successfully DM'd
+        failed_to: set[int] = set()   # telegram_ids that failed
+
         for user in all_users:
             # Skip users who've already submitted a prediction for this match
             pred = db.get_user_prediction_for_match(user["id"], match["id"])
             if pred:
+                sent_to.add(user["telegram_id"])   # already handled — counts as reached
                 continue
             try:
                 await context.bot.send_message(
@@ -73,11 +131,49 @@ async def job_send_prediction_prompts(context: ContextTypes.DEFAULT_TYPE) -> Non
                         match["id"], match["home_team"], match["away_team"], match["stage"]
                     ),
                 )
+                sent_to.add(user["telegram_id"])
                 logger.info("Sent prediction prompt to %s for match %d", user["name"], match["id"])
             except Exception as exc:
-                logger.warning("Could not DM user %d (%s): %s", user["telegram_id"], user["name"], exc)
+                failed_to.add(user["telegram_id"])
+                logger.warning(
+                    "Could not DM user %d (%s) for match %d: %s — "
+                    "make sure they've sent /start to the bot in DM",
+                    user["telegram_id"], user["name"], match["id"], exc
+                )
 
-        db.mark_prediction_dm_sent(match["id"])
+        all_reached = len(failed_to) == 0
+        none_reached = len(sent_to) == 0 and len(failed_to) > 0
+
+        if none_reached:
+            # ALL DMs failed — don't mark as sent, let the next cycle retry
+            logger.warning(
+                "Match %d: all %d prediction DMs failed — NOT marking as sent, will retry next cycle",
+                match["id"], len(failed_to)
+            )
+        else:
+            # At least one user reached — mark match as done to prevent re-sending
+            db.mark_prediction_dm_sent(match["id"])
+            if not all_reached:
+                # Store failed users for per-user retry
+                retry = context.application.bot_data.setdefault("pred_dm_retry", {})
+                for tid in failed_to:
+                    _rkey = f"{tid}_{match['id']}"
+                    if _rkey not in retry:
+                        retry[_rkey] = {
+                            "telegram_id": tid,
+                            "match_id":   match["id"],
+                            "home_team":  match["home_team"],
+                            "away_team":  match["away_team"],
+                            "stage":      match["stage"],
+                            "stage_label": stage,
+                            "kickoff_utc": match["kickoff_utc"],
+                            "pts":        pts,
+                            "pen":        pen,
+                            "attempts":   1,
+                        }
+                        logger.info(
+                            "Queued retry DM for user %d, match %d", tid, match["id"]
+                        )
 
 
 # ── Job: reminders ─────────────────────────────────────────────────────────────
