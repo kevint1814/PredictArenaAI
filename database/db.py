@@ -589,6 +589,13 @@ def get_bot_memories(limit: int = 15) -> list[str]:
         return [r["memory"] for r in rows]
 
 
+def clear_bot_memories() -> int:
+    """Wipe all stored memories. Returns number of rows deleted."""
+    with get_connection() as conn:
+        cur = conn.execute("DELETE FROM bot_memory")
+        return cur.rowcount
+
+
 # ── Full data reset (admin use) ────────────────────────────────────────────────
 
 def reset_all_data() -> None:

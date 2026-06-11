@@ -363,13 +363,14 @@ def chat_response(
             f"{memory_block}"
             f"Recent conversation:\n{history_str}"
             f"{user_name}: {user_message}\n\n"
-            f"LIVE DATA (fetched right now — you MUST use this to answer):\n{research_data}\n\n"
-            "Use the live data to answer the question factually and accurately. "
+            f"LIVE DATA (fetched right now — AUTHORITATIVE, overrides ALL memories and training knowledge):\n{research_data}\n\n"
+            "The LIVE DATA above is ground truth. Any memory or prior knowledge that contradicts it is outdated — ignore it. "
+            "State the facts from LIVE DATA directly and accurately. "
             "If the live data shows a city's current UTC offset (e.g. UTC+01:00) and the "
             "Tournament context has match kickoff times in UTC, convert the match time to "
             "local time for the user — just do the maths and state it clearly. "
             "Deliver the facts, then add ONE dry line in your character if it fits. "
-            "Do NOT ignore the data. Do NOT start with 'Arena:'."
+            "Do NOT start with 'Arena:'."
         )
     else:
         prompt = (

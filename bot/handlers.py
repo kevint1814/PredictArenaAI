@@ -1276,6 +1276,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # ── Admin: reset all data ──────────────────────────────────────────────────────
 
+async def cmd_clearmemory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: wipe all of Arena's stored memories (useful when wrong facts get saved)."""
+    if not is_admin(update.effective_user.id):
+        return
+    count = db.clear_bot_memories()
+    await update.message.reply_text(f"🧹 Cleared {count} memories. Arena starts fresh.")
+
+
 async def cmd_resetdata(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Admin: wipe all users, scores, predictions, and chat history.
@@ -1327,6 +1335,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("test",         cmd_test))
     app.add_handler(CommandHandler("testsuccess",  cmd_testsuccess))
     app.add_handler(CommandHandler("deletematch",  cmd_deletematch))
+    app.add_handler(CommandHandler("clearmemory",  cmd_clearmemory))
     app.add_handler(CommandHandler("resetdata",    cmd_resetdata))
 
     # Inline callbacks (prediction flow)
