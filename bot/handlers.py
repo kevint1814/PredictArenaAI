@@ -27,10 +27,16 @@ from telegram.ext import (
 )
 
 import database.db as db
-from bot.keyboards import match_list_keyboard, prediction_choice_keyboard
+from bot.keyboards import (
+    match_list_keyboard,
+    prediction_choice_keyboard,
+    home_score_keyboard,
+    away_score_keyboard,
+)
 from config import (
     ADMIN_TELEGRAM_ID,
     KNOCKOUT_STAGES,
+    SCORE_PREDICTION_FROM,
     STAGE_LABELS,
     STAGE_PENALTIES,
     STAGE_POINTS,
@@ -71,12 +77,14 @@ def format_leaderboard(scores: list) -> str:
     medals = ["🥇", "🥈", "🥉"]
     lines = ["🏆 *LEADERBOARD*\n"]
     for i, s in enumerate(scores):
-        medal    = medals[i] if i < 3 else f"{i+1}."
-        accuracy = (s["correct_predictions"] / s["total_graded"] * 100) if s["total_graded"] else 0
-        pts_label = f"{s['total_points']:+d}" if s["total_points"] != 0 else "0"
+        medal      = medals[i] if i < 3 else f"{i+1}."
+        accuracy   = (s["correct_predictions"] / s["total_graded"] * 100) if s["total_graded"] else 0
+        pts_label  = f"{s['total_points']:+d}" if s["total_points"] != 0 else "0"
+        bonus_count = s["score_bonus_count"] if "score_bonus_count" in s.keys() else 0
+        bonus_str  = f"  |  ⭐{bonus_count}" if bonus_count > 0 else ""
         lines.append(
             f"{medal} *{s['name']}* — {pts_label} pts  |  {accuracy:.0f}% acc"
-            f"  |  🔥{s['current_streak']}"
+            f"  |  🔥{s['current_streak']}{bonus_str}"
         )
     return "\n".join(lines)
 
@@ -93,6 +101,29 @@ def kickoff_dt(match) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def match_uses_score_prediction(match) -> bool:
+    """
+    Returns True if this match is eligible for the score prediction feature.
+    Only applies to matches kicking off on or after SCORE_PREDICTION_FROM (Jun 13 UTC).
+    """
+    cutoff = datetime.fromisoformat(SCORE_PREDICTION_FROM.replace("Z", "+00:00"))
+    return kickoff_dt(match) >= cutoff
+
+
+def score_pred_str(pred, home_team: str, away_team: str) -> str:
+    """
+    Format a stored score prediction as 'Home N–M Away'.
+    Returns empty string if no score prediction was entered.
+    """
+    if pred is None:
+        return ""
+    h = pred["home_score_pred"]
+    a = pred["away_score_pred"]
+    if h is None or a is None:
+        return ""
+    return f"{home_team} {h}–{a} {away_team}"
 
 
 # ── User commands ──────────────────────────────────────────────────────────────
@@ -201,7 +232,9 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("No graded predictions yet — get playing!")
         return
 
-    accuracy = s["correct_predictions"] / s["total_graded"] * 100
+    accuracy    = s["correct_predictions"] / s["total_graded"] * 100
+    bonus_count = s["score_bonus_count"] if "score_bonus_count" in s.keys() else 0
+    bonus_line  = f"⭐ Score bonuses: {bonus_count}\n" if bonus_count > 0 else ""
     await update.message.reply_text(
         f"📊 *{db_user['name']}*\n\n"
         f"🏆 Points:    *{s['total_points']:+d}*\n"
@@ -209,7 +242,8 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"❌ Wrong:     {s['wrong_predictions']}\n"
         f"⏭️ Missed:    {s['missed_predictions']}\n"
         f"🎯 Accuracy:  {accuracy:.1f}%\n"
-        f"🔥 Streak:    {s['current_streak']}  (best: {s['best_streak']})",
+        f"🔥 Streak:    {s['current_streak']}  (best: {s['best_streak']})\n"
+        f"{bonus_line}",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -232,27 +266,63 @@ async def cmd_predict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # Show current prediction status for each match so user knows what they've already submitted
-    lines = ["⚽ *Select a match — tap to predict or update your pick:*\n"]
     predictions_by_match = {}
     db_user = db.get_user_by_telegram_id(user.id)
     if db_user:
         for m in matches:
             p = db.get_user_prediction_for_match(db_user["id"], m["id"])
             if p:
-                display = {"home": m["home_team"], "draw": "Draw", "away": m["away_team"]}[p["prediction"]]
-                predictions_by_match[m["id"]] = display
+                winner_disp = {"home": m["home_team"], "draw": "Draw", "away": m["away_team"]}[p["prediction"]]
+                if match_uses_score_prediction(m) and p["home_score_pred"] is not None:
+                    predictions_by_match[m["id"]] = f"{winner_disp} ({p['home_score_pred']}–{p['away_score_pred']})"
+                else:
+                    predictions_by_match[m["id"]] = winner_disp
+
+    status_lines = []
+    for m in matches:
+        has_pred = m["id"] in predictions_by_match
+        icon = "✅" if has_pred else "❓"
+        pred_info = f"  → _{predictions_by_match[m['id']]}_" if has_pred else "  → _not set_"
+        status_lines.append(f"{icon} {m['home_team']} vs {m['away_team']}{pred_info}")
 
     await update.message.reply_text(
         "⚽ *Your upcoming predictions:*\n\n" +
-        "\n".join(
-            f"{'✅' if m['id'] in predictions_by_match else '❓'} "
-            f"{m['home_team']} vs {m['away_team']}"
-            + (f"  → _{predictions_by_match[m['id']]}_" if m['id'] in predictions_by_match else "  → _not set_")
-            for m in matches
-        ) + "\n\nTap a match below to predict or change your pick:",
+        "\n".join(status_lines) +
+        "\n\nTap a match below to predict or change your pick:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=match_list_keyboard(matches),
     )
+
+
+async def _notify_group_prediction(context, match, db_user, verb: str, match_id: int) -> None:
+    """Post a status-only (no pick revealed) group notification after a prediction is saved."""
+    try:
+        has_pred, pred_names = db.get_prediction_status(match_id)
+        predicted_count = sum(1 for v in has_pred.values() if v)
+        total_count     = len(has_pred)
+        display_name    = db_user["name"]
+
+        if verb == "updated":
+            group_msg = (
+                f"✏️ *{display_name}* updated their prediction for "
+                f"*{match['home_team']} vs {match['away_team']}*"
+            )
+        else:
+            group_msg = (
+                f"✅ *{display_name}* has locked in a prediction for "
+                f"*{match['home_team']} vs {match['away_team']}*"
+            )
+
+        if predicted_count == total_count:
+            group_msg += "\n\n🔥 Both players are locked in — predictions reveal at kickoff!"
+        else:
+            waiting = [pred_names[tid] for tid, done in has_pred.items() if not done]
+            if waiting:
+                group_msg += f"\n⏳ Still waiting on: *{', '.join(waiting)}*"
+
+        await context.bot.send_message(TELEGRAM_GROUP_ID, group_msg, parse_mode=ParseMode.MARKDOWN)
+    except Exception as exc:
+        logger.warning("Could not post prediction notification to group: %s", exc)
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -287,22 +357,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         existing = db.get_user_prediction_for_match(db_user["id"], match_id)
         stage    = STAGE_LABELS.get(match["stage"], match["stage"])
         dt_str   = kickoff_dt(match).strftime("%d %b  %H:%M UTC")
+        uses_score = match_uses_score_prediction(match)
 
         if existing and not existing["locked"]:
             current_display = {
                 "home": match["home_team"], "draw": "Draw", "away": match["away_team"]
             }[existing["prediction"]]
+            score_line = ""
+            if uses_score and existing["home_score_pred"] is not None:
+                score_line = (
+                    f"\nScore: *{match['home_team']} {existing['home_score_pred']}–"
+                    f"{existing['away_score_pred']} {match['away_team']}*"
+                )
             header = (
                 f"⚽ *{match['home_team']} vs {match['away_team']}*\n"
                 f"📍 {stage}  |  🗓 {dt_str}\n\n"
-                f"Your current pick: *{current_display}*\n"
+                f"Your current pick: *{current_display}*{score_line}\n"
                 f"Change it below, or just leave it:"
             )
         else:
+            score_hint = "\n_You'll also predict the exact score for a bonus point!_" if uses_score else ""
             header = (
                 f"⚽ *{match['home_team']} vs {match['away_team']}*\n"
                 f"📍 {stage}  |  🗓 {dt_str}\n\n"
-                f"Choose your prediction:"
+                f"Choose your prediction:{score_hint}"
             )
 
         await query.edit_message_text(
@@ -337,6 +415,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
+        # For Jun 13+ matches: show home score picker instead of saving immediately
+        if match_uses_score_prediction(match):
+            winner_display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[prediction]
+            await query.edit_message_text(
+                f"⚽ *{match['home_team']} vs {match['away_team']}*\n\n"
+                f"Winner: *{winner_display}* ✅\n\n"
+                f"How many goals does *{match['home_team']}* score?",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=home_score_keyboard(match_id, prediction),
+            )
+            return
+
+        # Pre-Jun-13 match — save winner directly (old flow, no score step)
         success, status = db.upsert_prediction(db_user["id"], match_id, prediction)
 
         if not success:
@@ -346,13 +437,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         pred_display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[prediction]
         lock_str     = kickoff_dt(match).strftime("%d %b, %H:%M UTC")
 
-        # ── DM acknowledgment ───────────────────────────────────────────────────
-        if status == "updated":
-            action_line = f"✏️ Changed to *{pred_display}*"
-            verb        = "updated"
-        else:
-            action_line = f"✅ Locked in: *{pred_display}*"
-            verb        = "submitted"
+        action_line = f"✏️ Changed to *{pred_display}*" if status == "updated" else f"✅ Locked in: *{pred_display}*"
+        verb        = status  # 'updated' or 'created'
 
         await query.edit_message_text(
             f"⚽ *{match['home_team']} vs {match['away_team']}*\n\n"
@@ -361,37 +447,89 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"_Change it any time before then with /predict._",
             parse_mode=ParseMode.MARKDOWN,
         )
+        await _notify_group_prediction(context, match, db_user, verb, match_id)
 
-        # ── Group notification (shows status, never reveals the actual pick) ────
-        try:
-            has_pred, pred_names = db.get_prediction_status(match_id)
-            predicted_count = sum(1 for v in has_pred.values() if v)
-            total_count     = len(has_pred)
+    # ── pred:hscore:<match_id>:<winner>:<home_score> — picked home team goals ──
+    elif parts[0] == "pred" and parts[1] == "hscore":
+        match_id   = int(parts[2])
+        winner     = parts[3]
+        home_score = int(parts[4])
+        match      = db.get_match_by_id(match_id)
 
-            display_name = db_user["name"]
-            if verb == "updated":
-                group_msg = (
-                    f"✏️ *{display_name}* updated their prediction for "
-                    f"*{match['home_team']} vs {match['away_team']}*"
-                )
-            else:
-                group_msg = (
-                    f"✅ *{display_name}* has locked in a prediction for "
-                    f"*{match['home_team']} vs {match['away_team']}*"
-                )
+        if not match:
+            await query.edit_message_text("Match not found.")
+            return
 
-            if predicted_count == total_count:
-                group_msg += "\n\n🔥 Both players are locked in — predictions reveal at kickoff!"
-            else:
-                waiting = [pred_names[tid] for tid, done in has_pred.items() if not done]
-                if waiting:
-                    group_msg += f"\n⏳ Still waiting on: *{', '.join(waiting)}*"
+        now = datetime.now(timezone.utc)
+        if match["status"] != "scheduled" or now >= kickoff_dt(match):
+            await query.edit_message_text("🔒 Too late — this match has kicked off.")
+            return
 
-            await context.bot.send_message(
-                TELEGRAM_GROUP_ID, group_msg, parse_mode=ParseMode.MARKDOWN
+        winner_display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[winner]
+        await query.edit_message_text(
+            f"⚽ *{match['home_team']} vs {match['away_team']}*\n\n"
+            f"Winner: *{winner_display}* ✅\n"
+            f"{match['home_team']}: *{home_score}* ✅\n\n"
+            f"How many goals does *{match['away_team']}* score?",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=away_score_keyboard(match_id, winner, home_score),
+        )
+
+    # ── pred:ascore:<match_id>:<winner>:<home>:<away> — picked away team goals ─
+    elif parts[0] == "pred" and parts[1] == "ascore":
+        match_id        = int(parts[2])
+        winner          = parts[3]
+        home_score_pred = int(parts[4])
+        away_score_pred = int(parts[5])
+        match           = db.get_match_by_id(match_id)
+
+        if not match:
+            await query.edit_message_text("Match not found.")
+            return
+
+        now = datetime.now(timezone.utc)
+        if match["status"] != "scheduled" or now >= kickoff_dt(match):
+            await query.edit_message_text("🔒 Too late — this match has kicked off.")
+            return
+
+        # Knockout: score can't be a draw (0-0, 1-1, etc.)
+        if match["stage"] in KNOCKOUT_STAGES and home_score_pred == away_score_pred:
+            await query.edit_message_text(
+                f"⚠️ This is a knockout match — it can't end level! ({home_score_pred}–{away_score_pred})\n\n"
+                f"One team must win. Pick the *{match['away_team']}* tally again:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=away_score_keyboard(match_id, winner, home_score_pred),
             )
-        except Exception as exc:
-            logger.warning("Could not post prediction notification to group: %s", exc)
+            return
+
+        success, status = db.upsert_prediction(
+            db_user["id"], match_id, winner,
+            home_score_pred=home_score_pred,
+            away_score_pred=away_score_pred,
+        )
+
+        if not success:
+            await query.edit_message_text("🔒 Predictions are locked for this match.")
+            return
+
+        winner_display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[winner]
+        lock_str       = kickoff_dt(match).strftime("%d %b, %H:%M UTC")
+        verb           = status  # 'updated' or 'created'
+
+        if verb == "updated":
+            action_line = f"✏️ Updated: *{winner_display}*"
+        else:
+            action_line = f"✅ Locked in: *{winner_display}*"
+
+        await query.edit_message_text(
+            f"⚽ *{match['home_team']} vs {match['away_team']}*\n\n"
+            f"{action_line}\n"
+            f"Score prediction: *{match['home_team']} {home_score_pred}–{away_score_pred} {match['away_team']}*\n"
+            f"🔒 Locks at kickoff: {lock_str}\n\n"
+            f"_Change any time before kickoff with /predict._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        await _notify_group_prediction(context, match, db_user, verb, match_id)
 
 
 # ── Admin commands ─────────────────────────────────────────────────────────────
@@ -522,7 +660,14 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 emoji, pts_str = "❌", str(r["points"])
             else:
                 emoji, pts_str = "❌", "0"
-            lines.append(f"{emoji} {r['name']}: {r['prediction_display']} → *{pts_str} pts*")
+            line = f"{emoji} {r['name']}: {r['prediction_display']} → *{pts_str} pts*"
+            # Score bonus (Jun 13+ matches only)
+            if r.get("score_bonus") is not None:
+                if r["score_bonus"] > 0:
+                    line += f" | ⭐ Score _{r.get('score_pred', '')}_ ✅ +{r['score_bonus']}pt"
+                elif r.get("score_pred"):
+                    line += f" | Score _{r['score_pred']}_ ❌"
+            lines.append(line)
 
         if commentary:
             lines.append(f"\n💬 _{commentary}_")

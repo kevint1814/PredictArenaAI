@@ -16,7 +16,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 import database.db as db
-from bot.handlers import format_leaderboard, kickoff_dt
+from bot.handlers import format_leaderboard, kickoff_dt, match_uses_score_prediction
 from bot.keyboards import prediction_choice_keyboard
 from config import STAGE_LABELS, STAGE_PENALTIES, STAGE_POINTS, TELEGRAM_GROUP_ID
 
@@ -266,6 +266,7 @@ async def job_match_starts(context: ContextTypes.DEFAULT_TYPE) -> None:
         stage       = STAGE_LABELS.get(match["stage"], match["stage"])
         pred_by_uid = {p["user_id"]: p for p in predictions}
 
+        uses_score = match_uses_score_prediction(match)
         lines = [
             f"🚀 *KICK OFF!*\n"
             f"*{match['home_team']}* vs *{match['away_team']}*  |  {stage}\n\n"
@@ -275,7 +276,11 @@ async def job_match_starts(context: ContextTypes.DEFAULT_TYPE) -> None:
             pred = pred_by_uid.get(user["id"])
             if pred:
                 display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[pred["prediction"]]
-                lines.append(f"• {user['name']}: *{display}*")
+                if uses_score and pred["home_score_pred"] is not None:
+                    score_str = f" _{pred['home_score_pred']}–{pred['away_score_pred']}_"
+                else:
+                    score_str = ""
+                lines.append(f"• {user['name']}: *{display}*{score_str}")
             else:
                 pen = STAGE_PENALTIES[match["stage"]]
                 lines.append(f"• {user['name']}: ❌ No prediction ({pen} pts penalty)")
@@ -367,7 +372,14 @@ async def job_check_results(context: ContextTypes.DEFAULT_TYPE) -> None:
                 else:
                     emoji   = "❌"
                     pts_str = "0"
-                lines.append(f"{emoji} {r['name']}: {r['prediction_display']} → *{pts_str} pts*")
+                line = f"{emoji} {r['name']}: {r['prediction_display']} → *{pts_str} pts*"
+                # Score prediction bonus line (Jun 13+ matches only)
+                if r.get("score_bonus") is not None:
+                    if r["score_bonus"] > 0:
+                        line += f" | ⭐ Score _{r.get('score_pred', '')}_ ✅ +{r['score_bonus']}pt"
+                    elif r.get("score_pred"):
+                        line += f" | Score _{r['score_pred']}_ ❌"
+                lines.append(line)
 
             if commentary:
                 lines.append(f"\n💬 _{commentary}_")

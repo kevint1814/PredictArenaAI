@@ -97,6 +97,11 @@ _MIGRATIONS = [
     "ALTER TABLE predictions ADD COLUMN points_awarded INTEGER",
     "ALTER TABLE matches     ADD COLUMN winner TEXT",
     "ALTER TABLE matches     ADD COLUMN prediction_dm_sent BOOLEAN DEFAULT FALSE",
+    # Score prediction feature (Jun 13 2026+)
+    "ALTER TABLE predictions ADD COLUMN home_score_pred INTEGER",
+    "ALTER TABLE predictions ADD COLUMN away_score_pred INTEGER",
+    "ALTER TABLE predictions ADD COLUMN score_bonus_awarded INTEGER",
+    "ALTER TABLE scores      ADD COLUMN score_bonus_count INTEGER DEFAULT 0",
 ]
 
 
@@ -313,7 +318,13 @@ def mark_prediction_dm_sent(match_id: int) -> None:
 
 # ── Predictions ───────────────────────────────────────────────────────────────
 
-def upsert_prediction(user_id: int, match_id: int, prediction: str) -> tuple[bool, str]:
+def upsert_prediction(
+    user_id: int,
+    match_id: int,
+    prediction: str,
+    home_score_pred: Optional[int] = None,
+    away_score_pred: Optional[int] = None,
+) -> tuple[bool, str]:
     """Insert or update a prediction. Returns (success, 'created'|'updated'|'locked')."""
     with get_connection() as conn:
         existing = conn.execute(
@@ -325,15 +336,19 @@ def upsert_prediction(user_id: int, match_id: int, prediction: str) -> tuple[boo
             if existing["locked"]:
                 return False, "locked"
             conn.execute(
-                """UPDATE predictions SET prediction=?, updated_at=datetime('now')
+                """UPDATE predictions
+                   SET prediction=?, home_score_pred=?, away_score_pred=?,
+                       updated_at=datetime('now')
                    WHERE user_id=? AND match_id=?""",
-                (prediction, user_id, match_id),
+                (prediction, home_score_pred, away_score_pred, user_id, match_id),
             )
             return True, "updated"
         else:
             conn.execute(
-                "INSERT INTO predictions (user_id, match_id, prediction) VALUES (?,?,?)",
-                (user_id, match_id, prediction),
+                """INSERT INTO predictions
+                   (user_id, match_id, prediction, home_score_pred, away_score_pred)
+                   VALUES (?,?,?,?,?)""",
+                (user_id, match_id, prediction, home_score_pred, away_score_pred),
             )
             return True, "created"
 
@@ -350,6 +365,27 @@ def set_prediction_points(user_id: int, match_id: int, points: int) -> None:
             "UPDATE predictions SET points_awarded=? WHERE user_id=? AND match_id=?",
             (points, user_id, match_id),
         )
+
+
+def set_score_bonus(user_id: int, match_id: int, bonus_pts: int) -> None:
+    """
+    Record and apply a score-prediction bonus.
+    bonus_pts = 0 → no bonus (score was wrong or not entered), still recorded so regrade works.
+    bonus_pts > 0 → add to total_points and increment score_bonus_count.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE predictions SET score_bonus_awarded=? WHERE user_id=? AND match_id=?",
+            (bonus_pts, user_id, match_id),
+        )
+        if bonus_pts > 0:
+            conn.execute(
+                """UPDATE scores
+                   SET total_points     = total_points + ?,
+                       score_bonus_count = score_bonus_count + 1
+                   WHERE user_id=?""",
+                (bonus_pts, user_id),
+            )
 
 
 def get_predictions_for_match(match_id: int) -> list[sqlite3.Row]:
@@ -489,6 +525,27 @@ def reverse_grading_for_match(match_id: int) -> None:
                 "UPDATE predictions SET points_awarded=NULL WHERE match_id=? AND user_id=?",
                 (match_id, uid),
             )
+
+        # ── Also reverse score bonus awards ────────────────────────────────────
+        bonus_rows = conn.execute(
+            "SELECT user_id, score_bonus_awarded FROM predictions "
+            "WHERE match_id=? AND score_bonus_awarded IS NOT NULL",
+            (match_id,),
+        ).fetchall()
+        for row in bonus_rows:
+            bonus = row["score_bonus_awarded"]
+            if bonus and bonus > 0:
+                conn.execute(
+                    """UPDATE scores
+                       SET total_points      = total_points - ?,
+                           score_bonus_count = MAX(0, score_bonus_count - 1)
+                       WHERE user_id=?""",
+                    (bonus, row["user_id"]),
+                )
+        conn.execute(
+            "UPDATE predictions SET score_bonus_awarded=NULL WHERE match_id=?",
+            (match_id,),
+        )
 
         conn.execute("DELETE FROM graded_matches WHERE match_id=?", (match_id,))
 

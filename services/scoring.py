@@ -4,12 +4,26 @@ Returns a list of result dicts used for the group announcement.
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 import database.db as db
-from config import STAGE_POINTS, STAGE_PENALTIES
+from config import SCORE_PREDICTION_BONUS, SCORE_PREDICTION_FROM, STAGE_POINTS, STAGE_PENALTIES
 
 logger = logging.getLogger(__name__)
+
+
+def _match_uses_score_prediction(kickoff_utc: str) -> bool:
+    """Returns True if kickoff is on or after SCORE_PREDICTION_FROM (Jun 13 UTC)."""
+    cutoff = datetime.fromisoformat(SCORE_PREDICTION_FROM.replace("Z", "+00:00"))
+    # DB stores kickoff_utc as 'YYYY-MM-DD HH:MM:SS' (UTC, no tz suffix)
+    try:
+        ko = datetime.strptime(kickoff_utc, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        ko = datetime.fromisoformat(kickoff_utc.replace("Z", "+00:00"))
+        if ko.tzinfo is None:
+            ko = ko.replace(tzinfo=timezone.utc)
+    return ko >= cutoff
 
 
 def determine_result(home_score: int, away_score: int) -> str:
@@ -102,6 +116,41 @@ def grade_match(match_id: int) -> list[dict]:
                 "points":             0,
                 "user_id":            uid,
             })
+
+    # ── Score prediction bonus (Jun 13+ matches only) ─────────────────────────
+    uses_score_pred = _match_uses_score_prediction(match["kickoff_utc"])
+    for result in results:
+        uid  = result["user_id"]
+        pred = pred_by_uid.get(uid)
+
+        if not uses_score_pred:
+            # Feature not active for this match — mark as N/A
+            result["score_bonus"] = None
+            result["score_pred"]  = None
+            continue
+
+        if pred is None or pred["home_score_pred"] is None or pred["away_score_pred"] is None:
+            # User missed their prediction entirely, or didn't enter a score
+            db.set_score_bonus(uid, match_id, 0)
+            result["score_bonus"] = 0
+            result["score_pred"]  = None
+            continue
+
+        if (int(pred["home_score_pred"]) == match["home_score"] and
+                int(pred["away_score_pred"]) == match["away_score"]):
+            # Exact score match — award bonus
+            db.set_score_bonus(uid, match_id, SCORE_PREDICTION_BONUS)
+            result["score_bonus"] = SCORE_PREDICTION_BONUS
+            logger.info(
+                "Score bonus +%d: %s predicted %d–%d correctly for match %d",
+                SCORE_PREDICTION_BONUS, result["name"],
+                pred["home_score_pred"], pred["away_score_pred"], match_id,
+            )
+        else:
+            db.set_score_bonus(uid, match_id, 0)
+            result["score_bonus"] = 0
+
+        result["score_pred"] = f"{pred['home_score_pred']}–{pred['away_score_pred']}"
 
     db.mark_match_graded(match_id)
     logger.info("Graded match %d — %d users", match_id, len(results))

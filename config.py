@@ -79,3 +79,10 @@ VALID_STAGES = list(STAGE_POINTS.keys())
 
 # Knockout stages where a draw is impossible — must have a winner (AET/pens if needed)
 KNOCKOUT_STAGES = {"round_of_32", "round_of_16", "quarter_final", "semi_final", "final"}
+
+# ── Score prediction ───────────────────────────────────────────────────────────
+# Bonus points awarded for guessing the exact final score (independent of winner prediction).
+SCORE_PREDICTION_BONUS: int = int(os.getenv("SCORE_PREDICTION_BONUS", "3"))
+# ISO UTC — only matches on or after this date get the score prediction feature.
+# Matches already finished before deployment are unaffected.
+SCORE_PREDICTION_FROM: str = "2026-06-13T00:00:00Z"

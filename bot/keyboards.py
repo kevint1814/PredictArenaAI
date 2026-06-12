@@ -39,3 +39,39 @@ def prediction_choice_keyboard(
         InlineKeyboardButton(team_label(away_team), callback_data=f"pred:pick:{match_id}:away")
     )
     return InlineKeyboardMarkup([buttons])
+
+
+def home_score_keyboard(match_id: int, winner: str) -> InlineKeyboardMarkup:
+    """
+    Number picker (0–9) for the home team's goal tally.
+    Callback: pred:hscore:<match_id>:<winner>:<home_score>
+    """
+    row1 = [
+        InlineKeyboardButton(str(i), callback_data=f"pred:hscore:{match_id}:{winner}:{i}")
+        for i in range(5)
+    ]
+    row2 = [
+        InlineKeyboardButton(str(i), callback_data=f"pred:hscore:{match_id}:{winner}:{i}")
+        for i in range(5, 10)
+    ]
+    return InlineKeyboardMarkup([row1, row2])
+
+
+def away_score_keyboard(match_id: int, winner: str, home_score: int) -> InlineKeyboardMarkup:
+    """
+    Number picker (0–9) for the away team's goal tally.
+    Callback: pred:ascore:<match_id>:<winner>:<home_score>:<away_score>
+    """
+    row1 = [
+        InlineKeyboardButton(
+            str(i), callback_data=f"pred:ascore:{match_id}:{winner}:{home_score}:{i}"
+        )
+        for i in range(5)
+    ]
+    row2 = [
+        InlineKeyboardButton(
+            str(i), callback_data=f"pred:ascore:{match_id}:{winner}:{home_score}:{i}"
+        )
+        for i in range(5, 10)
+    ]
+    return InlineKeyboardMarkup([row1, row2])

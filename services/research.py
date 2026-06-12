@@ -203,6 +203,10 @@ _RESEARCH_TRIGGERS = {
     "recent form", "squad", "lineup", "manager", "coach", "record",
     "goals", "assists", "caps", "trophies", "world cup", "champions league",
     "premier league", "la liga", "bundesliga", "serie a", "ligue 1",
+    # Live score / result queries
+    "score", "the score", "result", "who's winning", "who is winning",
+    "how many goals", "what's the result", "live score", "current score",
+    "how's the game", "how's the match", "what's happening in",
 }
 
 
