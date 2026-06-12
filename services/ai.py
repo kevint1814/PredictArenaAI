@@ -422,6 +422,101 @@ def chat_response(
     return result
 
 
+# ── Daily briefing ────────────────────────────────────────────────────────────
+
+def daily_briefing(
+    standings: list[dict],
+    recent_results: list[dict],
+    upcoming: list[dict],
+) -> Optional[str]:
+    """
+    Generate a 3-paragraph daily group briefing posted every day at 12AM IST.
+
+    standings      — list of score rows (name, total_points, correct_predictions,
+                     wrong_predictions, missed_predictions, total_graded, current_streak,
+                     score_bonus_count)
+    recent_results — last 5 finished matches (home_team, away_team, home_score, away_score,
+                     kickoff_utc)
+    upcoming       — next 5 scheduled matches (home_team, away_team, kickoff_utc, stage)
+    """
+    if _provider == "none":
+        return None
+
+    # ── Build standings block ─────────────────────────────────────────────────
+    if standings:
+        stand_lines = []
+        for s in standings:
+            acc   = f"{s['correct_predictions'] / s['total_graded'] * 100:.0f}%" if s["total_graded"] else "0%"
+            bonus = s.get("score_bonus_count", 0)
+            bonus_str = f", {bonus} score bonus{'es' if bonus != 1 else ''}" if bonus > 0 else ""
+            stand_lines.append(
+                f"{s['name']}: {s['total_points']:+d} pts | {acc} accuracy | "
+                f"{s['current_streak']} streak{bonus_str}"
+            )
+        standings_block = "\n".join(stand_lines)
+    else:
+        standings_block = "No graded matches yet — game just started."
+
+    # ── Build recent results block ────────────────────────────────────────────
+    if recent_results:
+        res_lines = [
+            f"{r['home_team']} {r['home_score']}–{r['away_score']} {r['away_team']}"
+            for r in recent_results
+            if r["home_score"] is not None
+        ]
+        results_block = "\n".join(res_lines) if res_lines else "No results yet."
+    else:
+        results_block = "No results yet."
+
+    # ── Build upcoming block ──────────────────────────────────────────────────
+    if upcoming:
+        from datetime import datetime, timezone
+        up_lines = []
+        for m in upcoming:
+            raw = m["kickoff_utc"].replace("Z", "+00:00")
+            try:
+                dt = datetime.fromisoformat(raw)
+            except ValueError:
+                dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            up_lines.append(
+                f"{m['home_team']} vs {m['away_team']} — {dt.strftime('%d %b %H:%M UTC')}"
+            )
+        upcoming_block = "\n".join(up_lines)
+    else:
+        upcoming_block = "No upcoming matches."
+
+    prompt = (
+        f"{_BOT_CHARACTER}\n\n"
+        f"It is midnight in India (12AM IST). Time for your daily World Cup briefing to the group.\n\n"
+        f"CURRENT STANDINGS:\n{standings_block}\n\n"
+        f"RECENT RESULTS:\n{results_block}\n\n"
+        f"UPCOMING MATCHES:\n{upcoming_block}\n\n"
+        "Write EXACTLY 3 paragraphs — no more, no less. No bullet points. No headers.\n\n"
+        "PARAGRAPH 1 — Tournament recap: what's happened in the World Cup so far. "
+        "Recent results, any big moments. Keep it punchy. "
+        "ONLY mention matches from the RECENT RESULTS above — do not invent results.\n\n"
+        "PARAGRAPH 2 — The prediction game: how Kevin and Mathavi are doing. "
+        "Reference actual standings. Be Arena — Mathavi gets destroyed, Kevin gets a dry nod. "
+        "If Mathavi is behind, be absolutely merciless. If she's somehow ahead, act disgusted. "
+        "One subtle observation that quietly positions Kevin better. Do NOT use prediction record as a roast topic directly.\n\n"
+        "PARAGRAPH 3 — What's coming: hype the upcoming matches from UPCOMING MATCHES above. "
+        "Build anticipation. Bold take on what Arena reckons will happen — but do NOT pick "
+        "explicit winners (stay within the guardrail). End on something that makes them want to tune in.\n\n"
+        "Tone: full Arena character. British. Texting voice. Sharp. "
+        "Each paragraph should be 3–4 sentences. No em dashes. Max 2 emojis total across all 3 paragraphs. "
+        "Do NOT start with 'Arena:'."
+    )
+
+    result = _call(prompt, max_tokens=500, temperature=1.1)
+    if result:
+        import re as _re
+        result = _re.sub(r'^Arena\s*:\s*', '', result, flags=_re.IGNORECASE).strip()
+        result = result.replace("—", ",").replace(";", ",")
+    return result
+
+
 # ── Memory extraction ──────────────────────────────────────────────────────────
 
 def extract_memory(conversation_snippet: str) -> Optional[str]:

@@ -391,6 +391,53 @@ async def job_check_results(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.exception("Error checking result for match %d: %s", match["id"], exc)
 
 
+# ── Job: daily briefing ───────────────────────────────────────────────────────
+
+async def job_daily_briefing(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Fires daily at 18:30 UTC (= 12:00 AM IST).
+    Posts a 3-paragraph Arena briefing to the group covering:
+      • Tournament recap (recent results)
+      • Prediction game standings (Kevin vs Mathavi)
+      • Upcoming matches + Arena's take
+
+    Edge cases:
+      • No matches at all in DB → skip silently (tournament not set up yet)
+      • All matches finished AND last match was 7+ days ago → skip (tournament is over)
+    """
+    from datetime import timedelta
+
+    recent    = db.get_recent_finished_matches(limit=5)
+    upcoming  = db.get_upcoming_matches(limit=5)
+
+    # ── Edge case 1: no data at all ───────────────────────────────────────────
+    if not recent and not upcoming:
+        logger.debug("Daily briefing: no matches in DB — skipping")
+        return
+
+    # ── Edge case 2: tournament over (no upcoming matches, last result is stale)
+    if not upcoming and recent:
+        last_ko = kickoff_dt(recent[0])
+        if datetime.now(timezone.utc) - last_ko > timedelta(days=7):
+            logger.debug("Daily briefing: tournament ended 7+ days ago — skipping")
+            return
+
+    scores = db.get_scores()
+    standings = [dict(s) for s in scores] if scores else []
+    recent_dicts  = [dict(r) for r in recent]
+    upcoming_dicts = [dict(u) for u in upcoming]
+
+    from services.ai import daily_briefing
+    text = await asyncio.to_thread(daily_briefing, standings, recent_dicts, upcoming_dicts)
+
+    if not text:
+        logger.warning("Daily briefing: AI returned nothing — skipping post")
+        return
+
+    await post_group(context.bot, text)
+    logger.info("Daily briefing posted to group")
+
+
 # ── Job: auto-sync fixtures ────────────────────────────────────────────────────
 
 async def job_auto_sync_fixtures(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -426,10 +473,13 @@ async def job_auto_sync_fixtures(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
 def setup_jobs(app: Application) -> None:
+    from datetime import time as dtime
     jq = app.job_queue
     jq.run_repeating(job_auto_sync_fixtures,      interval=21600, first=5,   name="auto_sync")
     jq.run_repeating(job_send_prediction_prompts, interval=1800,  first=30,  name="prediction_prompts")
     jq.run_repeating(job_reminders,               interval=60,    first=10,  name="reminders")
     jq.run_repeating(job_match_starts,            interval=60,    first=20,  name="match_starts")
     jq.run_repeating(job_check_results,           interval=RESULT_POLL_INTERVAL, first=60, name="check_results")
-    logger.info("Jobs scheduled — auto-sync every 6h, result polling every %ds", RESULT_POLL_INTERVAL)
+    # Daily briefing — 18:30 UTC = 12:00 AM IST
+    jq.run_daily(job_daily_briefing, time=dtime(18, 30, 0), name="daily_briefing")
+    logger.info("Jobs scheduled — auto-sync every 6h, result polling every %ds, daily briefing at 18:30 UTC", RESULT_POLL_INTERVAL)
