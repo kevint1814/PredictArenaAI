@@ -1102,6 +1102,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     db.register_user_if_new(user.id, user.first_name, is_admin=is_admin(user.id))
 
+    # Use the DB display name (respects /setname) so Arena always gets "Kevin"/"Mathavi"
+    # rather than whatever Telegram has as first_name.
+    _db_user_chat = db.get_user_by_telegram_id(user.id)
+    speaker_name  = _db_user_chat["name"] if _db_user_chat else user.first_name
+
     # ── Short-circuit: factual match/schedule queries bypass AI entirely ────────
     # AI models reliably ignore context for factual lookups — return real DB data.
     import re as _re
@@ -1265,7 +1270,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     )
                 # Store the exchange in history so follow-up questions (e.g. "what
                 # time is that in KL?") have context about what was just shown.
-                db.add_chat_message(chat.id, "user", text, speaker=user.first_name)
+                db.add_chat_message(chat.id, "user", text, speaker=speaker_name)
                 db.add_chat_message(chat.id, "bot", "\n".join(lines), speaker="Arena")
                 await message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
                 return
@@ -1333,7 +1338,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     for h in history_rows]
 
     # Store incoming message BEFORE generating response so history is current
-    db.add_chat_message(chat.id, "user", text, speaker=user.first_name)
+    db.add_chat_message(chat.id, "user", text, speaker=speaker_name)
 
     # ── Research: fetch real data for factual queries ───────────────────────────
     from services.research import detect_research_intent, get_city_time, web_search
@@ -1400,7 +1405,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ── Generate response ───────────────────────────────────────────────────────
     from services.ai import chat_response, extract_memory
     reply = await asyncio.to_thread(
-        chat_response, text, user.first_name, tournament_context, memories, history,
+        chat_response, text, speaker_name, tournament_context, memories, history,
         research_data=research_data,
     )
 
