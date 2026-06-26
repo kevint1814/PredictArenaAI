@@ -212,12 +212,18 @@ async def cmd_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"   🗓 {dt_str}  |  {stage}\n"
             f"   Correct: +{pts} pts  |  Wrong: 0 pts  |  Missed: {pen} pts\n"
         )
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    text = "\n".join(lines)
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    # Store in history so follow-up questions ("what time is that in IST?") have context
+    db.add_chat_message(update.effective_chat.id, "bot", text, speaker="Arena")
 
 
 async def cmd_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     scores = db.get_scores()
-    await update.message.reply_text(format_leaderboard(scores), parse_mode=ParseMode.MARKDOWN)
+    text   = format_leaderboard(scores)
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    # Store in history so follow-up questions ("what do u think abt this?") have context
+    db.add_chat_message(update.effective_chat.id, "bot", text, speaker="Arena")
 
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -235,7 +241,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     accuracy    = s["correct_predictions"] / s["total_graded"] * 100
     bonus_count = s["score_bonus_count"] if "score_bonus_count" in s.keys() else 0
     bonus_line  = f"⭐ Score bonuses: {bonus_count}\n" if bonus_count > 0 else ""
-    await update.message.reply_text(
+    text = (
         f"📊 *{db_user['name']}*\n\n"
         f"🏆 Points:    *{s['total_points']:+d}*\n"
         f"✅ Correct:   {s['correct_predictions']}\n"
@@ -243,9 +249,11 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"⏭️ Missed:    {s['missed_predictions']}\n"
         f"🎯 Accuracy:  {accuracy:.1f}%\n"
         f"🔥 Streak:    {s['current_streak']}  (best: {s['best_streak']})\n"
-        f"{bonus_line}",
-        parse_mode=ParseMode.MARKDOWN,
+        f"{bonus_line}"
     )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    # Store in history so follow-up questions have context
+    db.add_chat_message(update.effective_chat.id, "bot", text, speaker="Arena")
 
 
 # ── Prediction flow (DM only) ──────────────────────────────────────────────────

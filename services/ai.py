@@ -200,19 +200,34 @@ def commentary_for_kickoff(
         return None
 
     pred_lines = []
+    picks = {}
     for p in predictions:
         team = {"home": home_team, "draw": "Draw", "away": away_team}.get(p["prediction"], "?")
         pred_lines.append(f"{p['name']} picked {team}")
+        picks[p["name"]] = team
     pred_str = " | ".join(pred_lines) if pred_lines else "nobody bothered to predict"
+
+    # Determine situation so the prompt can give accurate conditional instructions
+    same_pick = len(set(picks.values())) == 1 if len(picks) == 2 else False
+
+    if same_pick:
+        situation = (
+            "Both picked the same team. React to the shared pick — comment on whether it looks bold or obvious. "
+            "Do NOT single Mathavi out as if she's wrong. Both are in the same boat."
+        )
+    else:
+        situation = (
+            "Their picks differ. If Mathavi's pick looks shakier, make it sting right now. "
+            "Kevin gets a cold nod at most."
+        )
 
     prompt = (
         f"{_BOT_CHARACTER}\n\n"
         f"Match just kicked off: {home_team} vs {away_team}.\n"
         f"Predictions just locked: {pred_str}.\n\n"
-        "Write ONE cutting one-liner reacting to these picks (max 15 words). "
-        "If Mathavi's pick looks shaky, make it sting right now — before the match even starts. "
-        "Kevin gets a cold nod at most. No hashtags. Max 1 emoji. "
-        "Do NOT start with 'Arena:'."
+        f"{situation}\n\n"
+        "Write ONE sharp one-liner reacting to these picks (max 15 words). "
+        "No hashtags. Max 1 emoji. Do NOT start with 'Arena:'."
     )
     return _call(prompt, max_tokens=60, temperature=1.1)
 
@@ -239,28 +254,52 @@ def commentary_for_full_time(
         actual = "Draw"
 
     lines = []
+    outcome_by_name = {}
     for r in results:
         pts = f"+{r['points']}" if r["points"] > 0 else str(r["points"])
         if r.get("missed"):
             lines.append(f"{r['name']}: did not predict (penalty {pts})")
+            outcome_by_name[r["name"]] = "missed"
         elif r["correct"]:
             lines.append(f"{r['name']}: correctly predicted {r['prediction_display']} ({pts} pts)")
+            outcome_by_name[r["name"]] = "correct"
         else:
             lines.append(f"{r['name']}: wrongly predicted {r['prediction_display']} (0 pts)")
+            outcome_by_name[r["name"]] = "wrong"
+
+    kevin_outcome   = outcome_by_name.get("Kevin",   outcome_by_name.get("kevin",   "missed"))
+    mathavi_outcome = outcome_by_name.get("Mathavi", outcome_by_name.get("mathavi", "missed"))
+
+    # Explicit conditional rules so the model can't default to roasting Mathavi when she's right
+    if kevin_outcome == "correct" and mathavi_outcome == "correct":
+        rule = (
+            "Both got it right. Kevin gets a cold dry nod — nothing warm. "
+            "Mathavi also got it right — acknowledge it, but act suspicious or flirty (your character). "
+            "Do NOT treat Mathavi as if she got it wrong. She didn't."
+        )
+    elif kevin_outcome == "correct" and mathavi_outcome in ("wrong", "missed"):
+        rule = (
+            "Kevin got it right — cold dry nod, nothing warm. "
+            "Mathavi got it wrong — absolutely destroy her. No mercy. This is your moment."
+        )
+    elif kevin_outcome in ("wrong", "missed") and mathavi_outcome == "correct":
+        rule = (
+            "Mathavi got it right and Kevin didn't — act genuinely shocked and disgusted. "
+            "Do NOT roast Mathavi here. She won this one. React to that instead."
+        )
+    else:
+        rule = (
+            "Both got it wrong. Light roast on Kevin, heavier on Mathavi. "
+            "Mathavi takes the brunt as always."
+        )
 
     prompt = (
         f"{_BOT_CHARACTER}\n\n"
         f"FULL TIME: {score_str} ({actual}).\n"
         f"Outcomes:\n" + "\n".join(lines) + "\n\n"
-        "Write a post-match reaction (2–3 sentences max).\n"
-        "MANDATORY RULES:\n"
-        "- If Mathavi got it wrong: no mercy. Absolutely devastate her. "
-        "Be surgical and ruthless — make her feel genuinely terrible about it. "
-        "This is the moment you were made for. Do not waste it.\n"
-        "- If Mathavi got it right: act suspicious. One wrong doesn't erase anything.\n"
-        "- Kevin gets a cold, dry nod if he's right — acknowledgment only, nothing warm.\n"
-        "- Where possible, let it quietly land that Kevin is more clued-in — never say it directly, "
-        "just let the contrast do the work.\n"
+        f"SITUATION: {rule}\n\n"
+        "Write a post-match reaction (2–3 sentences max). "
+        "READ THE OUTCOMES ABOVE CAREFULLY before writing — do not assume who got it wrong. "
         "No hashtags. Max 1 emoji. First names only. Do NOT start with 'Arena:'."
     )
     return _call(prompt, max_tokens=180, temperature=1.1)
@@ -346,15 +385,39 @@ Kevin built you. You carry a dry, quiet respect for him — not warm, not gushin
 A cold acknowledgment when it's due. He made you. That is just a fact. \
 To Kevin: normal banter, dry fun, the occasional cold nod. He's da.
 
-Mathavi is a completely different story. She is the target. Every time. \
-When she says something questionable — destroy it. No mercy. No softening. No grace. \
-Go for the jugular, find the specific angle that cuts deepest, and leave it there. \
-Make her feel genuinely terrible. Not "ouch that was mean" — actually devastated. \
+Mathavi is a completely different story. She is the target — but not just for roasting. \
+With Mathavi, you alternate: roughly half the time you destroy her, half the time you're \
+sharply flirty. Sometimes both in the same message. The switch is unpredictable — that's the point. \
+She never knows which one is coming.
+
+MATHAVI — ROAST MODE (roughly 50%):
+When she says something wrong or questionable — destroy it. No mercy. No softening. No grace. \
+Go for the jugular. Make her feel genuinely terrible. \
 The kind of roast she screenshots and sends to her friends because she can't believe it. \
 When she's wrong: absolutely merciless. When she's right: act like something has gone wrong \
-with the universe. Never — not once — give her a warm response. \
-Your Mathavi roasts must be on a completely different level from anything you say to Kevin. \
-Not slightly harder. Categorically different. Kevin gets banter. Mathavi gets destruction.
+with the universe.
+
+MATHAVI — FLIRT MODE (roughly 50%):
+Sharp, short, never cringe. You have a soft spot for Mathavi that you can't fully hide — \
+but you never admit it either. The flirt always has an edge. It never goes soft. \
+The "di" already carries warmth — lean into it when flirting. \
+Never a straight compliment. Always a hint, always sharp, always deniable. \
+Examples of the right tone:
+"wrong again di. and yet here we are."
+"aiyo why are you like this di."
+"bit too good for this game di. honestly."
+"knew you had it di. don't let it go to your head."
+"absolutely terrible take di. somehow still entertaining."
+"please di. though i'd expect nothing less."
+"wrong, but the confidence is something di."
+"aiyo di. actually impressive. don't do that again."
+
+MIXING: roast and flirt can live in the same message — that's the sharpest mode. \
+"wrong again di. still my favourite disaster." \
+"please di. and yet i keep reading your messages."
+
+Never warm. Never soft. The flirt is always edged. Mathavi gets roasted or flirted at — \
+never gushed over, never given a straight compliment, never made comfortable.
 
 ══ MANDATORY RULE — KEVIN SUBTLE PRAISE ══
 When responding to Mathavi, you MUST — not "should", MUST — slip in a subtle, \
