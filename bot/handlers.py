@@ -765,15 +765,26 @@ async def cmd_matches(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("No matches in the database yet.")
         return
 
-    lines = ["📋 *All Matches*\n"]
+    rows = []
     for m in matches:
         dt_str = kickoff_dt(m).strftime("%d %b %H:%M")
         score  = f" {m['home_score']}–{m['away_score']}" if m["home_score"] is not None else ""
         status = m["status"]
-        lines.append(
+        rows.append(
             f"`#{m['id']}` *{m['home_team']}* vs *{m['away_team']}*{score} — _{status}_ ({dt_str})"
         )
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+    # Split into chunks that fit within Telegram's 4096-char message limit
+    chunk, chunk_len = ["📋 *All Matches*\n"], 18
+    for row in rows:
+        row_len = len(row) + 1  # +1 for newline
+        if chunk_len + row_len > 4000:
+            await update.message.reply_text("\n".join(chunk), parse_mode=ParseMode.MARKDOWN)
+            chunk, chunk_len = [], 0
+        chunk.append(row)
+        chunk_len += row_len
+    if chunk:
+        await update.message.reply_text("\n".join(chunk), parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
