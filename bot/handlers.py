@@ -760,7 +760,7 @@ async def cmd_matches(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not is_admin(update.effective_user.id):
         return
 
-    matches = db.get_all_matches(limit=60)
+    matches = db.get_all_matches(limit=200)
     if not matches:
         await update.message.reply_text("No matches in the database yet.")
         return
