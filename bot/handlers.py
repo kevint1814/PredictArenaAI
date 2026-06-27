@@ -608,10 +608,8 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return
 
         if db.is_match_graded(match_id):
-            await update.message.reply_text(
-                "This match is already graded. Use /regrade if you need to correct it."
-            )
-            return
+            # Auto-reverse so /setresult can be used directly to correct a wrong score
+            db.reverse_grading_for_match(match_id)
 
         # If the match never went 'live' (e.g. /setresult called before kickoff time),
         # post the kickoff reveal first so the group sees the full flow.
