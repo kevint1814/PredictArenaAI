@@ -37,6 +37,7 @@ from bot.keyboards import (
 )
 from config import (
     ADMIN_TELEGRAM_ID,
+    ET_PREDICTION_FROM,
     KNOCKOUT_STAGES,
     SCORE_PREDICTION_FROM,
     STAGE_LABELS,
@@ -184,6 +185,16 @@ def match_uses_score_prediction(match) -> bool:
     Only applies to matches kicking off on or after SCORE_PREDICTION_FROM (Jun 13 UTC).
     """
     cutoff = datetime.fromisoformat(SCORE_PREDICTION_FROM.replace("Z", "+00:00"))
+    return kickoff_dt(match) >= cutoff
+
+
+def match_uses_et_prediction(match) -> bool:
+    """
+    Returns True if this knockout match gets the ET + pens bonus questions.
+    Only applies to matches kicking off on or after ET_PREDICTION_FROM.
+    Set ET_PREDICTION_FROM in .env to the kickoff UTC of the first match you want it live for.
+    """
+    cutoff = datetime.fromisoformat(ET_PREDICTION_FROM.replace("Z", "+00:00"))
     return kickoff_dt(match) >= cutoff
 
 
@@ -367,8 +378,8 @@ async def cmd_predict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         has_pred = m["id"] in predictions_by_match
         icon = "✅" if has_pred else "❓"
         pred_info = f"  → _{predictions_by_match[m['id']]}_" if has_pred else "  → _not set_"
-        # Show ET + pens predictions for knockout matches
-        if has_pred and m["stage"] in KNOCKOUT_STAGES and db_user:
+        # Show ET + pens predictions for knockout matches that use the feature
+        if has_pred and m["stage"] in KNOCKOUT_STAGES and match_uses_et_prediction(m) and db_user:
             p = db.get_user_prediction_for_match(db_user["id"], m["id"])
             if p and p["predicted_et"] is not None:
                 et_label = "ET: Yes ⏱" if p["predicted_et"] == 1 else "ET: No ⚽"
@@ -585,8 +596,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("🔒 Too late — this match has kicked off.")
             return
 
-        # Knockout matches: ask ET first
-        if match["stage"] in KNOCKOUT_STAGES:
+        # Knockout matches on/after ET_PREDICTION_FROM: ask ET first
+        if match["stage"] in KNOCKOUT_STAGES and match_uses_et_prediction(match):
             winner_display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[winner]
             await query.edit_message_text(
                 f"⚽ *{match['home_team']} vs {match['away_team']}*\n\n"
@@ -599,7 +610,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
-        # Group stage — save directly (no pens question)
+        # Group stage or pre-ET-feature knockout — save directly
         success, status = db.upsert_prediction(
             db_user["id"], match_id, winner,
             home_score_pred=home_score_pred,

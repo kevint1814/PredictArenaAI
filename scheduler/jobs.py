@@ -16,7 +16,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 import database.db as db
-from bot.handlers import format_leaderboard, format_player_block, kickoff_dt, match_uses_score_prediction
+from bot.handlers import format_leaderboard, format_player_block, kickoff_dt, match_uses_et_prediction, match_uses_score_prediction
 from bot.keyboards import prediction_choice_keyboard
 from config import STAGE_LABELS, STAGE_PENALTIES, STAGE_POINTS, TELEGRAM_GROUP_ID
 
@@ -282,7 +282,7 @@ async def job_match_starts(context: ContextTypes.DEFAULT_TYPE) -> None:
                 else:
                     score_str = ""
                 bonus_parts = []
-                if match["stage"] in KNOCKOUT_STAGES:
+                if match["stage"] in KNOCKOUT_STAGES and match_uses_et_prediction(match):
                     if pred["predicted_et"] is not None:
                         bonus_parts.append(f"ET: {'Yes ⏱' if pred['predicted_et'] == 1 else 'No ⚽'}")
                     if pred["predicted_pens"] is not None:

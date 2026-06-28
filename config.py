@@ -91,3 +91,6 @@ ET_PREDICTION_BONUS: int = int(os.getenv("ET_PREDICTION_BONUS", "1"))
 # ISO UTC — only matches on or after this date get the score prediction feature.
 # Matches already finished before deployment are unaffected.
 SCORE_PREDICTION_FROM: str = "2026-06-13T00:00:00Z"
+# ET + Pens prediction bonus — only for knockout matches kicking off on/after this datetime.
+# Set to the kickoff UTC of the 3rd R32 match (Germany vs Paraguay, #5744).
+ET_PREDICTION_FROM: str = os.getenv("ET_PREDICTION_FROM", "2026-06-29T00:00:00Z")
