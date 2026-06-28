@@ -41,6 +41,29 @@ def prediction_choice_keyboard(
     return InlineKeyboardMarkup([buttons])
 
 
+def et_keyboard(match_id: int, winner: str, home_score: int, away_score: int) -> InlineKeyboardMarkup:
+    """
+    Step 4 for knockout predictions — will this go to extra time?
+    Callback: pred:et:<match_id>:<winner>:<home_score>:<away_score>:<0|1>
+    """
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("⚽ No",  callback_data=f"pred:et:{match_id}:{winner}:{home_score}:{away_score}:0"),
+        InlineKeyboardButton("⏱ Yes", callback_data=f"pred:et:{match_id}:{winner}:{home_score}:{away_score}:1"),
+    ]])
+
+
+def pens_keyboard(match_id: int, winner: str, home_score: int, away_score: int, predicted_et: int) -> InlineKeyboardMarkup:
+    """
+    Step 5 (conditional) for knockout predictions — will it go to penalties?
+    Only shown when ET answer was Yes. Carries predicted_et forward in callback.
+    Callback: pred:pens:<match_id>:<winner>:<home_score>:<away_score>:<predicted_et>:<0|1>
+    """
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("⚽ No",  callback_data=f"pred:pens:{match_id}:{winner}:{home_score}:{away_score}:{predicted_et}:0"),
+        InlineKeyboardButton("🥅 Yes", callback_data=f"pred:pens:{match_id}:{winner}:{home_score}:{away_score}:{predicted_et}:1"),
+    ]])
+
+
 def home_score_keyboard(match_id: int, winner: str) -> InlineKeyboardMarkup:
     """
     Number picker (0–9) for the home team's goal tally.

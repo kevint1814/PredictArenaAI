@@ -32,6 +32,8 @@ from bot.keyboards import (
     prediction_choice_keyboard,
     home_score_keyboard,
     away_score_keyboard,
+    et_keyboard,
+    pens_keyboard,
 )
 from config import (
     ADMIN_TELEGRAM_ID,
@@ -69,6 +71,79 @@ async def assert_private(update: Update) -> bool:
         await update.message.reply_text("Please send this command to me in a private DM.")
         return False
     return True
+
+
+def format_player_block(r: dict, match) -> str:
+    """
+    Builds one player's result block for the full-time announcement.
+
+    Format:
+        Name
+        ---
+        Winner = +X pts ✅ / 0 pts ❌
+        Score — H–A = +X pts ✅ / 0 pts ❌
+        ⏱ ET — Yes/No = +X pt ✅ / 0 pts ❌   (knockout only)
+        🥅 Pens — Yes/No = +X pt ✅ / 0 pts ❌  (ET=Yes only)  OR  🥅 Pens = N/A
+        ---
+        Total pts from this match: +X
+    """
+    from config import KNOCKOUT_STAGES
+    lines = [f"*{r['name']}*", "---"]
+
+    # ── Winner
+    if r.get("missed"):
+        lines.append(f"No prediction = {r['points']} pts ❌")
+    elif r["correct"]:
+        lines.append(f"{r['prediction_display']} = +{r['points']} pts ✅")
+    else:
+        lines.append(f"{r['prediction_display']} = 0 pts ❌")
+
+    # ── Score bonus
+    if r.get("score_bonus") is not None:
+        sp = r.get("score_pred", "")
+        if r["score_bonus"] > 0:
+            lines.append(f"Score — {sp} = +{r['score_bonus']} pts ✅")
+        else:
+            lines.append(f"Score — {sp} = 0 pts ❌")
+
+    # ── ET + Pens (knockout matches only)
+    if match["stage"] in KNOCKOUT_STAGES:
+        et_bonus = r.get("et_bonus")
+        et_pred  = r.get("et_pred")   # 0, 1, or None (no prediction)
+
+        if et_bonus is not None:
+            et_val = "Yes" if et_pred == 1 else "No"
+            if et_bonus > 0:
+                lines.append(f"⏱ ET — {et_val} = +{et_bonus} pt ✅")
+            else:
+                lines.append(f"⏱ ET — {et_val} = 0 pts ❌")
+        else:
+            lines.append("⏱ ET = N/A")
+
+        # Pens: N/A if user predicted ET=No (pens was never asked)
+        if et_pred == 0 or et_pred is None:
+            lines.append("🥅 Pens = N/A")
+        else:
+            pens_bonus = r.get("pens_bonus")
+            pens_pred  = r.get("pens_pred")   # 0, 1, or None
+            if pens_bonus is not None and pens_pred is not None:
+                pens_val = "Yes" if pens_pred == 1 else "No"
+                if pens_bonus > 0:
+                    lines.append(f"🥅 Pens — {pens_val} = +{pens_bonus} pt ✅")
+                else:
+                    lines.append(f"🥅 Pens — {pens_val} = 0 pts ❌")
+            else:
+                lines.append("🥅 Pens = N/A")
+
+    lines.append("---")
+
+    total = (r["points"]
+             + (r.get("score_bonus") or 0)
+             + (r.get("et_bonus") or 0)
+             + (r.get("pens_bonus") or 0))
+    total_str = f"+{total}" if total > 0 else str(total)
+    lines.append(f"Total pts from this match: *{total_str}*")
+    return "\n".join(lines)
 
 
 def format_leaderboard(scores: list) -> str:
@@ -188,7 +263,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "  _Use underscores for spaces in team names, e.g._ `Saudi_Arabia`\n"
             "*/syncmatches* — Pull WC fixtures from football-data.org\n"
             "*/fixstages* — Re-fetch & correct match stages (use after round transitions)\n"
-            "*/setresult* `<match_id> <home_score> <away_score>` — Manual override if auto-check fails\n"
+            "*/setresult* `<match_id> <home_score> <away_score> [home|away]` — Set result; add winner for knockout AET/pens\n"
             "*/regrade* `<match_id>` — Reverse and re-run grading\n"
             "*/users* — List registered users\n"
         )
@@ -292,6 +367,15 @@ async def cmd_predict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         has_pred = m["id"] in predictions_by_match
         icon = "✅" if has_pred else "❓"
         pred_info = f"  → _{predictions_by_match[m['id']]}_" if has_pred else "  → _not set_"
+        # Show ET + pens predictions for knockout matches
+        if has_pred and m["stage"] in KNOCKOUT_STAGES and db_user:
+            p = db.get_user_prediction_for_match(db_user["id"], m["id"])
+            if p and p["predicted_et"] is not None:
+                et_label = "ET: Yes ⏱" if p["predicted_et"] == 1 else "ET: No ⚽"
+                pred_info += f"  |  _{et_label}_"
+            if p and p["predicted_pens"] is not None:
+                pens_label = "Pens: Yes 🥅" if p["predicted_pens"] == 1 else "Pens: No ⚽"
+                pred_info += f"  |  _{pens_label}_"
         status_lines.append(f"{icon} {m['home_team']} vs {m['away_team']}{pred_info}")
 
     await update.message.reply_text(
@@ -501,16 +585,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("🔒 Too late — this match has kicked off.")
             return
 
-        # Knockout: score can't be a draw (0-0, 1-1, etc.)
-        if match["stage"] in KNOCKOUT_STAGES and home_score_pred == away_score_pred:
+        # Knockout matches: ask ET first
+        if match["stage"] in KNOCKOUT_STAGES:
+            winner_display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[winner]
             await query.edit_message_text(
-                f"⚠️ This is a knockout match — it can't end level! ({home_score_pred}–{away_score_pred})\n\n"
-                f"One team must win. Pick the *{match['away_team']}* tally again:",
+                f"⚽ *{match['home_team']} vs {match['away_team']}*\n\n"
+                f"Winner: *{winner_display}* ✅\n"
+                f"Score: *{match['home_team']} {home_score_pred}–{away_score_pred} {match['away_team']}* ✅\n\n"
+                f"Will this match go to *extra time*? ⏱\n"
+                f"_(+1 bonus if correct, 0 if wrong)_",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=away_score_keyboard(match_id, winner, home_score_pred),
+                reply_markup=et_keyboard(match_id, winner, home_score_pred, away_score_pred),
             )
             return
 
+        # Group stage — save directly (no pens question)
         success, status = db.upsert_prediction(
             db_user["id"], match_id, winner,
             home_score_pred=home_score_pred,
@@ -534,6 +623,118 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"⚽ *{match['home_team']} vs {match['away_team']}*\n\n"
             f"{action_line}\n"
             f"Score prediction: *{match['home_team']} {home_score_pred}–{away_score_pred} {match['away_team']}*\n"
+            f"🔒 Locks at kickoff: {lock_str}\n\n"
+            f"_Change any time before kickoff with /predict._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        await _notify_group_prediction(context, match, db_user, verb, match_id)
+
+
+    # ── pred:et:<match_id>:<winner>:<home>:<away>:<0|1> — ET yes/no ─────────────
+    elif parts[0] == "pred" and parts[1] == "et":
+        match_id        = int(parts[2])
+        winner          = parts[3]
+        home_score_pred = int(parts[4])
+        away_score_pred = int(parts[5])
+        predicted_et    = int(parts[6])   # 1 = yes, 0 = no
+        match           = db.get_match_by_id(match_id)
+
+        if not match:
+            await query.edit_message_text("Match not found.")
+            return
+
+        now = datetime.now(timezone.utc)
+        if match["status"] != "scheduled" or now >= kickoff_dt(match):
+            await query.edit_message_text("🔒 Too late — this match has kicked off.")
+            return
+
+        if predicted_et == 1:
+            # Yes ET → ask about pens next
+            winner_display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[winner]
+            await query.edit_message_text(
+                f"⚽ *{match['home_team']} vs {match['away_team']}*\n\n"
+                f"Winner: *{winner_display}* ✅\n"
+                f"Score: *{match['home_team']} {home_score_pred}–{away_score_pred} {match['away_team']}* ✅\n"
+                f"Extra time: *Yes ⏱* ✅\n\n"
+                f"Will it go all the way to *penalties*? 🥅\n"
+                f"_(+1 bonus if correct, 0 if wrong)_",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=pens_keyboard(match_id, winner, home_score_pred, away_score_pred, predicted_et),
+            )
+            return
+
+        # No ET → save directly (pens is impossible, so predicted_pens = None)
+        success, status = db.upsert_prediction(
+            db_user["id"], match_id, winner,
+            home_score_pred=home_score_pred,
+            away_score_pred=away_score_pred,
+            predicted_et=0,
+            predicted_pens=None,
+        )
+
+        if not success:
+            await query.edit_message_text("🔒 Predictions are locked for this match.")
+            return
+
+        winner_display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[winner]
+        lock_str       = kickoff_dt(match).strftime("%d %b, %H:%M UTC")
+        verb           = status
+        action_line    = f"✏️ Updated: *{winner_display}*" if verb == "updated" else f"✅ Locked in: *{winner_display}*"
+
+        await query.edit_message_text(
+            f"⚽ *{match['home_team']} vs {match['away_team']}*\n\n"
+            f"{action_line}\n"
+            f"Score: *{match['home_team']} {home_score_pred}–{away_score_pred} {match['away_team']}*\n"
+            f"Extra time: *No ⚽*\n"
+            f"🔒 Locks at kickoff: {lock_str}\n\n"
+            f"_Change any time before kickoff with /predict._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        await _notify_group_prediction(context, match, db_user, verb, match_id)
+
+    # ── pred:pens:<match_id>:<winner>:<home>:<away>:<predicted_et>:<0|1> ────────
+    elif parts[0] == "pred" and parts[1] == "pens":
+        match_id        = int(parts[2])
+        winner          = parts[3]
+        home_score_pred = int(parts[4])
+        away_score_pred = int(parts[5])
+        predicted_et    = int(parts[6])
+        predicted_pens  = int(parts[7])
+        match           = db.get_match_by_id(match_id)
+
+        if not match:
+            await query.edit_message_text("Match not found.")
+            return
+
+        now = datetime.now(timezone.utc)
+        if match["status"] != "scheduled" or now >= kickoff_dt(match):
+            await query.edit_message_text("🔒 Too late — this match has kicked off.")
+            return
+
+        success, status = db.upsert_prediction(
+            db_user["id"], match_id, winner,
+            home_score_pred=home_score_pred,
+            away_score_pred=away_score_pred,
+            predicted_et=predicted_et,
+            predicted_pens=predicted_pens,
+        )
+
+        if not success:
+            await query.edit_message_text("🔒 Predictions are locked for this match.")
+            return
+
+        winner_display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[winner]
+        pens_display   = "Yes 🥅" if predicted_pens else "No ⚽"
+        lock_str       = kickoff_dt(match).strftime("%d %b, %H:%M UTC")
+        verb           = status
+        action_line    = f"✏️ Updated: *{winner_display}*" if verb == "updated" else f"✅ Locked in: *{winner_display}*"
+
+        await query.edit_message_text(
+            f"⚽ *{match['home_team']} vs {match['away_team']}*\n\n"
+            f"{action_line}\n"
+            f"Score: *{match['home_team']} {home_score_pred}–{away_score_pred} {match['away_team']}*\n"
+            f"Extra time: *Yes ⏱*\n"
+            f"Penalties: *{pens_display}*\n"
             f"🔒 Locks at kickoff: {lock_str}\n\n"
             f"_Change any time before kickoff with /predict._",
             parse_mode=ParseMode.MARKDOWN,
@@ -593,7 +794,9 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     args = context.args
     if not args or len(args) < 3:
         await update.message.reply_text(
-            "Usage: `/setresult <match_id> <home_score> <away_score>`",
+            "Usage: `/setresult <match_id> <home_score> <away_score> [home|away]`\n\n"
+            "_The optional 4th argument is required for knockout matches that go to AET/pens "
+            "(when the 90-min score is level — e.g._ `/setresult 5318 1 1 home`_)._",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -602,6 +805,11 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         match_id   = int(args[0])
         home_score = int(args[1])
         away_score = int(args[2])
+        # Optional winner override — required for knockout matches ending level at 90 min
+        winner_override = args[3].lower() if len(args) >= 4 else None
+        if winner_override and winner_override not in ("home", "away"):
+            await update.message.reply_text("Winner must be `home` or `away`.", parse_mode=ParseMode.MARKDOWN)
+            return
 
         match = db.get_match_by_id(match_id)
         if not match:
@@ -630,7 +838,10 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 pred = pred_by_uid.get(u["id"])
                 if pred:
                     disp = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[pred["prediction"]]
-                    kick_lines.append(f"• {u['name']}: *{disp}*")
+                    pens_str = ""
+                    if match["stage"] in KNOCKOUT_STAGES and pred["predicted_pens"] is not None:
+                        pens_str = f" | Pens: {'Yes 🥅' if pred['predicted_pens'] == 1 else 'No ⚽'}"
+                    kick_lines.append(f"• {u['name']}: *{disp}*{pens_str}")
                 else:
                     pen = STAGE_PENALTIES[match["stage"]]
                     kick_lines.append(f"• {u['name']}: ❌ No prediction ({pen} pts penalty)")
@@ -643,7 +854,29 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 logger.warning("Could not post kickoff reveal: %s", exc)
             db.mark_predictions_revealed(match_id)
 
-        db.update_match_status(match_id, "finished", home_score, away_score)
+        # Determine winner to store — needed so grading handles AET/pens correctly.
+        # For knockout draws (e.g. 1-1), admin must pass the 4th arg: home or away.
+        if winner_override:
+            stored_winner = winner_override
+        elif home_score > away_score:
+            stored_winner = "home"
+        elif away_score > home_score:
+            stored_winner = "away"
+        else:
+            stored_winner = None  # non-knockout draw — valid (e.g. group stage)
+
+        # Warn if knockout match ends level but no winner specified
+        if stored_winner is None and match["stage"] in KNOCKOUT_STAGES:
+            await update.message.reply_text(
+                f"⚠️ This is a knockout match and the score is level ({home_score}–{away_score}).\n\n"
+                f"Who won on AET/pens?\n"
+                f"`/setresult {match_id} {home_score} {away_score} home` — {match['home_team']}\n"
+                f"`/setresult {match_id} {home_score} {away_score} away` — {match['away_team']}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        db.update_match_status(match_id, "finished", home_score, away_score, stored_winner)
 
         from services.scoring import grade_match
         from services.ai import commentary_for_full_time
@@ -656,31 +889,16 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         commentary = commentary_for_full_time(
             match["home_team"], match["away_team"], home_score, away_score, results
         )
-        lines = [
-            f"🏁 *FULL TIME*\n"
-            f"*{match['home_team']} {home_score}–{away_score} {match['away_team']}*\n"
-        ]
+        suffix = " _(Pens)_" if stored_winner and home_score == away_score else ""
+        lines = [f"🏁 *FULL TIME*\n*{match['home_team']} {home_score}–{away_score} {match['away_team']}*{suffix}\n"]
         for r in results:
-            if r["correct"]:
-                emoji, pts_str = "✅", f"+{r['points']}"
-            elif r.get("missed"):
-                emoji, pts_str = "❌", str(r["points"])
-            else:
-                emoji, pts_str = "❌", "0"
-            line = f"{emoji} {r['name']}: {r['prediction_display']} → *{pts_str} pts*"
-            # Score bonus (Jun 13+ matches only)
-            if r.get("score_bonus") is not None:
-                if r["score_bonus"] > 0:
-                    line += f" | ⭐ Score _{r.get('score_pred', '')}_ ✅ +{r['score_bonus']}pt"
-                elif r.get("score_pred"):
-                    line += f" | Score _{r['score_pred']}_ ❌"
-            lines.append(line)
+            lines.append(format_player_block(r, match))
 
         if commentary:
             lines.append(f"\n💬 _{commentary}_")
 
         lines.append(f"\n{format_leaderboard(db.get_scores())}")
-        await context.bot.send_message(TELEGRAM_GROUP_ID, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        await context.bot.send_message(TELEGRAM_GROUP_ID, "\n\n".join(lines), parse_mode=ParseMode.MARKDOWN)
         await update.message.reply_text("✅ Done — result posted to group.")
 
     except Exception as exc:

@@ -170,11 +170,16 @@ def get_match_result(match_id: int) -> Optional[dict]:
         away_s      = ft.get("away")
         winner_raw  = score_obj.get("winner")   # "HOME_TEAM" | "AWAY_TEAM" | "DRAW" | None
         winner      = _WINNER_MAP.get(winner_raw) if winner_raw else None
+        duration     = score_obj.get("duration", "REGULAR")   # "REGULAR" | "EXTRA_TIME" | "PENALTY_SHOOTOUT"
+        went_to_pens = duration == "PENALTY_SHOOTOUT"
+        went_to_et   = duration in ("EXTRA_TIME", "PENALTY_SHOOTOUT")
         return {
-            "finished":   finished,
-            "home_score": int(home_s) if home_s is not None else None,
-            "away_score": int(away_s) if away_s is not None else None,
-            "winner":     winner,   # 'home' | 'draw' | 'away' — authoritative for AET/pens
+            "finished":     finished,
+            "home_score":   int(home_s) if home_s is not None else None,
+            "away_score":   int(away_s) if away_s is not None else None,
+            "winner":       winner,        # 'home' | 'draw' | 'away' — authoritative for AET/pens
+            "went_to_pens": went_to_pens,  # True only when match ended via penalty shootout
+            "went_to_et":   went_to_et,    # True when match went to extra time (inc. pens)
         }
     except Exception as exc:
         logger.warning("Could not fetch result for match %d: %s", match_id, exc)

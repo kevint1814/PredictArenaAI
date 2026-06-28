@@ -16,7 +16,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 import database.db as db
-from bot.handlers import format_leaderboard, kickoff_dt, match_uses_score_prediction
+from bot.handlers import format_leaderboard, format_player_block, kickoff_dt, match_uses_score_prediction
 from bot.keyboards import prediction_choice_keyboard
 from config import STAGE_LABELS, STAGE_PENALTIES, STAGE_POINTS, TELEGRAM_GROUP_ID
 
@@ -272,6 +272,7 @@ async def job_match_starts(context: ContextTypes.DEFAULT_TYPE) -> None:
             f"*{match['home_team']}* vs *{match['away_team']}*  |  {stage}\n\n"
             f"📊 *Predictions:*"
         ]
+        from config import KNOCKOUT_STAGES
         for user in all_users:
             pred = pred_by_uid.get(user["id"])
             if pred:
@@ -280,7 +281,14 @@ async def job_match_starts(context: ContextTypes.DEFAULT_TYPE) -> None:
                     score_str = f" _{pred['home_score_pred']}–{pred['away_score_pred']}_"
                 else:
                     score_str = ""
-                lines.append(f"• {user['name']}: *{display}*{score_str}")
+                bonus_parts = []
+                if match["stage"] in KNOCKOUT_STAGES:
+                    if pred.get("predicted_et") is not None:
+                        bonus_parts.append(f"ET: {'Yes ⏱' if pred['predicted_et'] == 1 else 'No ⚽'}")
+                    if pred.get("predicted_pens") is not None:
+                        bonus_parts.append(f"Pens: {'Yes 🥅' if pred['predicted_pens'] == 1 else 'No ⚽'}")
+                bonus_str = (" | " + " | ".join(bonus_parts)) if bonus_parts else ""
+                lines.append(f"• {user['name']}: *{display}*{score_str}{bonus_str}")
             else:
                 pen = STAGE_PENALTIES[match["stage"]]
                 lines.append(f"• {user['name']}: ❌ No prediction ({pen} pts penalty)")
@@ -345,7 +353,13 @@ async def job_check_results(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.info("Result confirmed: %s %d–%d %s",
                         match["home_team"], home_score, away_score, match["away_team"])
 
-            db.update_match_status(match["id"], "finished", home_score, away_score, result.get("winner"))
+            db.update_match_status(
+                match["id"], "finished",
+                home_score, away_score,
+                result.get("winner"),
+                result.get("went_to_pens"),
+                result.get("went_to_et"),
+            )
             results = grade_match(match["id"])
 
             if not results:
@@ -358,34 +372,18 @@ async def job_check_results(context: ContextTypes.DEFAULT_TYPE) -> None:
                 home_score, away_score, results,
             )
 
-            lines = [
-                f"🏁 *FULL TIME*\n"
-                f"*{match['home_team']} {home_score}–{away_score} {match['away_team']}*\n"
-            ]
+            suffix = " _(Pens)_" if result.get("went_to_pens") else (
+                " _(AET)_" if result.get("went_to_et") else ""
+            )
+            lines = [f"🏁 *FULL TIME*\n*{match['home_team']} {home_score}–{away_score} {match['away_team']}*{suffix}\n"]
             for r in results:
-                if r["correct"]:
-                    emoji   = "✅"
-                    pts_str = f"+{r['points']}"
-                elif r.get("missed"):
-                    emoji   = "❌"
-                    pts_str = str(r["points"])
-                else:
-                    emoji   = "❌"
-                    pts_str = "0"
-                line = f"{emoji} {r['name']}: {r['prediction_display']} → *{pts_str} pts*"
-                # Score prediction bonus line (Jun 13+ matches only)
-                if r.get("score_bonus") is not None:
-                    if r["score_bonus"] > 0:
-                        line += f" | ⭐ Score _{r.get('score_pred', '')}_ ✅ +{r['score_bonus']}pt"
-                    elif r.get("score_pred"):
-                        line += f" | Score _{r['score_pred']}_ ❌"
-                lines.append(line)
+                lines.append(format_player_block(r, match))
 
             if commentary:
                 lines.append(f"\n💬 _{commentary}_")
 
             lines.append(f"\n{format_leaderboard(db.get_scores())}")
-            await post_group(context.bot, "\n".join(lines))
+            await post_group(context.bot, "\n\n".join(lines))
 
         except Exception as exc:
             logger.exception("Error checking result for match %d: %s", match["id"], exc)

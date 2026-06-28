@@ -83,6 +83,11 @@ KNOCKOUT_STAGES = {"round_of_32", "round_of_16", "quarter_final", "semi_final", 
 # ── Score prediction ───────────────────────────────────────────────────────────
 # Bonus points awarded for guessing the exact final score (independent of winner prediction).
 SCORE_PREDICTION_BONUS: int = int(os.getenv("SCORE_PREDICTION_BONUS", "3"))
+# Bonus points for correctly predicting whether a knockout match goes to penalties.
+# No negative — wrong guess = 0, correct = +1.
+PENS_PREDICTION_BONUS: int = int(os.getenv("PENS_PREDICTION_BONUS", "1"))
+# Bonus points for correctly predicting whether a knockout match goes to extra time.
+ET_PREDICTION_BONUS: int = int(os.getenv("ET_PREDICTION_BONUS", "1"))
 # ISO UTC — only matches on or after this date get the score prediction feature.
 # Matches already finished before deployment are unaffected.
 SCORE_PREDICTION_FROM: str = "2026-06-13T00:00:00Z"

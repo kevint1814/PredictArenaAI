@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import database.db as db
-from config import SCORE_PREDICTION_BONUS, SCORE_PREDICTION_FROM, STAGE_POINTS, STAGE_PENALTIES
+from config import ET_PREDICTION_BONUS, PENS_PREDICTION_BONUS, SCORE_PREDICTION_BONUS, SCORE_PREDICTION_FROM, STAGE_POINTS, STAGE_PENALTIES
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +151,45 @@ def grade_match(match_id: int) -> list[dict]:
             result["score_bonus"] = 0
 
         result["score_pred"] = f"{pred['home_score_pred']}–{pred['away_score_pred']}"
+
+    # ── Extra time prediction bonus (knockout matches only) ───────────────────
+    if match["went_to_et"] is not None:
+        actual_et = 1 if match["went_to_et"] else 0
+        for result in results:
+            uid  = result["user_id"]
+            pred = pred_by_uid.get(uid)
+            if pred is None or pred["predicted_et"] is None:
+                db.set_et_bonus(uid, match_id, 0)
+                result["et_bonus"] = 0
+                result["et_pred"]  = None
+            elif pred["predicted_et"] == actual_et:
+                db.set_et_bonus(uid, match_id, ET_PREDICTION_BONUS)
+                result["et_bonus"] = ET_PREDICTION_BONUS
+                result["et_pred"]  = pred["predicted_et"]
+            else:
+                db.set_et_bonus(uid, match_id, 0)
+                result["et_bonus"] = 0
+                result["et_pred"]  = pred["predicted_et"]
+
+    # ── Penalty prediction bonus (knockout matches only) ───────────────────────
+    # went_to_pens is NULL for non-knockout / pre-feature matches — skip silently
+    if match["went_to_pens"] is not None:
+        actual_pens = 1 if match["went_to_pens"] else 0
+        for result in results:
+            uid  = result["user_id"]
+            pred = pred_by_uid.get(uid)
+            if pred is None or pred["predicted_pens"] is None:
+                db.set_pens_bonus(uid, match_id, 0)
+                result["pens_bonus"] = 0
+                result["pens_pred"]  = None
+            elif pred["predicted_pens"] == actual_pens:
+                db.set_pens_bonus(uid, match_id, PENS_PREDICTION_BONUS)
+                result["pens_bonus"] = PENS_PREDICTION_BONUS
+                result["pens_pred"]  = pred["predicted_pens"]
+            else:
+                db.set_pens_bonus(uid, match_id, 0)
+                result["pens_bonus"] = 0
+                result["pens_pred"]  = pred["predicted_pens"]
 
     db.mark_match_graded(match_id)
     logger.info("Graded match %d — %d users", match_id, len(results))
