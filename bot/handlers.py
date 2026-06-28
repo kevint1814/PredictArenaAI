@@ -1703,6 +1703,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # ── Admin: reset all data ──────────────────────────────────────────────────────
 
+async def cmd_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin: post a custom message to the group as Arena.
+    Usage: /send <text>
+    Supports Markdown. The message is sent exactly as typed (after the command).
+    """
+    if not is_admin(update.effective_user.id):
+        return
+    # Strip the command word (/send or /send@botname) and preserve everything
+    # after it exactly — newlines, spacing, all of it.
+    import re
+    raw = update.message.text or ""
+    text = re.sub(r"^/send(@\S+)?", "", raw, flags=re.IGNORECASE).strip()
+    if not text:
+        await update.message.reply_text(
+            "Usage: /send <message>\nExample:\n/send 🏆 Final predictions close in 10 minutes!"
+        )
+        return
+    await context.bot.send_message(TELEGRAM_GROUP_ID, text)
+    await update.message.reply_text("✅ Posted to the group.")
+
+
 async def cmd_clearmemory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin: wipe all of Arena's stored memories (useful when wrong facts get saved)."""
     if not is_admin(update.effective_user.id):
@@ -1763,6 +1785,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("test",         cmd_test))
     app.add_handler(CommandHandler("testsuccess",  cmd_testsuccess))
     app.add_handler(CommandHandler("deletematch",  cmd_deletematch))
+    app.add_handler(CommandHandler("send",         cmd_send))
     app.add_handler(CommandHandler("clearmemory",  cmd_clearmemory))
     app.add_handler(CommandHandler("resetdata",    cmd_resetdata))
 
