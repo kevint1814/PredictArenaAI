@@ -807,10 +807,11 @@ async def cmd_matches(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     rows = []
     for m in matches:
         dt_str = kickoff_dt(m).strftime("%d %b %H:%M")
-        score  = f" {m['home_score']}–{m['away_score']}" if m["home_score"] is not None else ""
-        status = m["status"]
+        score     = f" {m['home_score']}–{m['away_score']}" if m["home_score"] is not None else ""
+        status    = m["status"]
+        stage_lbl = STAGE_LABELS.get(m["stage"], m["stage"])
         rows.append(
-            f"`#{m['id']}` *{m['home_team']}* vs *{m['away_team']}*{score} — _{status}_ ({dt_str})"
+            f"`#{m['id']}` *{m['home_team']}* vs *{m['away_team']}*{score} — _{status}_ ({dt_str}) [{stage_lbl}]"
         )
 
     # Split into chunks that fit within Telegram's 4096-char message limit
