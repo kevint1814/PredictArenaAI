@@ -187,6 +187,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "*/addmatch* `<api_id> <Home> <Away> <YYYY-MM-DDTHH:MM:SS> <stage>`\n"
             "  _Use underscores for spaces in team names, e.g._ `Saudi_Arabia`\n"
             "*/syncmatches* — Pull WC fixtures from football-data.org\n"
+            "*/fixstages* — Re-fetch & correct match stages (use after round transitions)\n"
             "*/setresult* `<match_id> <home_score> <away_score>` — Manual override if auto-check fails\n"
             "*/regrade* `<match_id>` — Reverse and re-run grading\n"
             "*/users* — List registered users\n"
@@ -717,6 +718,46 @@ async def cmd_syncmatches(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(f"✅ Synced {added} upcoming matches.")
     except Exception as exc:
         logger.exception("syncmatches error")
+        await update.message.reply_text(f"Error: {exc}")
+
+
+async def cmd_fixstages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin: re-fetch all WC matches from football-data.org and correct any wrong stage values.
+    Needed because the API uses LAST_32/LAST_16 which were previously unmapped (fell through
+    to "group"), causing R32 matches to show a Draw button.
+    """
+    if not is_admin(update.effective_user.id):
+        return
+
+    await update.message.reply_text("Fetching all WC match stages from football-data.org…")
+    try:
+        from services.football import get_all_wc_matches
+
+        all_fixtures = get_all_wc_matches()
+        if not all_fixtures:
+            await update.message.reply_text("No matches returned from API — check FOOTBALL_DATA_KEY.")
+            return
+
+        fixed   = 0
+        skipped = 0
+        for f in all_fixtures:
+            existing = db.get_match_by_api_id(f["id"])
+            if not existing:
+                skipped += 1
+                continue
+            if existing["stage"] != f["stage"]:
+                db.update_match_stage(existing["id"], f["stage"])
+                fixed += 1
+
+        await update.message.reply_text(
+            f"✅ Stage fix complete.\n"
+            f"  Fixed: {fixed} matches\n"
+            f"  Skipped (not in DB): {skipped} matches\n\n"
+            f"Run /matches to verify — R32 matches should now show `round_of_32`."
+        )
+    except Exception as exc:
+        logger.exception("fixstages error")
         await update.message.reply_text(f"Error: {exc}")
 
 
@@ -1496,6 +1537,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("addmatch",     cmd_addmatch))
     app.add_handler(CommandHandler("setresult",    cmd_setresult))
     app.add_handler(CommandHandler("syncmatches",  cmd_syncmatches))
+    app.add_handler(CommandHandler("fixstages",    cmd_fixstages))
     app.add_handler(CommandHandler("regrade",      cmd_regrade))
     app.add_handler(CommandHandler("users",        cmd_users))
     app.add_handler(CommandHandler("forcedm",      cmd_forcedm))

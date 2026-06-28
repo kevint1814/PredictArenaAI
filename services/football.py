@@ -27,14 +27,15 @@ _BASE    = "https://api.football-data.org/v4"
 _HEADERS = {"X-Auth-Token": FOOTBALL_DATA_KEY}
 
 # Map football-data.org stage strings → our internal stage keys
+# football-data.org uses LAST_32 / LAST_16 (not ROUND_OF_32 / ROUND_OF_16)
 _STAGE_MAP = {
     "GROUP_STAGE":    "group",
-    "ROUND_OF_32":    "round_of_32",
-    "ROUND_OF_16":    "round_of_16",
+    "LAST_32":        "round_of_32",   # API value for Round of 32
+    "LAST_16":        "round_of_16",   # API value for Round of 16
     "QUARTER_FINALS": "quarter_final",
     "SEMI_FINALS":    "semi_final",
     "FINAL":          "final",
-    "THIRD_PLACE":    "semi_final",   # treat 3rd-place playoff same as semi points
+    "THIRD_PLACE":    "semi_final",    # treat 3rd-place playoff same as semi points
 }
 
 # Map football-data.org winner values → our internal winner keys
@@ -88,6 +89,33 @@ def get_upcoming_matches(competition: str = WC_COMPETITION_CODE, season: int = W
             "home":        m["homeTeam"]["name"],
             "away":        m["awayTeam"]["name"],
             "kickoff_utc": m["utcDate"],    # already ISO-8601 UTC e.g. "2026-06-11T17:00:00Z"
+            "stage":       stage,
+        })
+
+    return result
+
+
+def get_all_wc_matches(competition: str = WC_COMPETITION_CODE, season: int = WC_SEASON) -> list[dict]:
+    """
+    Return ALL WC matches (any status) so we can back-fill stages for already-synced matches.
+    Each dict: {id, home, away, kickoff_utc, stage}
+    """
+    if not FOOTBALL_DATA_KEY:
+        logger.warning("FOOTBALL_DATA_KEY not set — cannot sync stages")
+        return []
+
+    data    = _get(f"competitions/{competition}/matches", {"season": season})
+    matches = data.get("matches", [])
+    result  = []
+
+    for m in matches:
+        raw_stage = m.get("stage", "GROUP_STAGE")
+        stage     = _STAGE_MAP.get(raw_stage, "group")
+        result.append({
+            "id":          m["id"],
+            "home":        m["homeTeam"]["name"],
+            "away":        m["awayTeam"]["name"],
+            "kickoff_utc": m["utcDate"],
             "stage":       stage,
         })
 

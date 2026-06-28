@@ -219,6 +219,14 @@ def get_match_by_api_id(api_match_id: int) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
+def update_match_stage(match_id: int, stage: str) -> None:
+    """Update the stage of a match — used by /fixstages to correct wrong API stage mapping."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE matches SET stage = ? WHERE id = ?", (stage, match_id)
+        )
+
+
 def get_upcoming_matches(limit: int = 10) -> list[sqlite3.Row]:
     with get_connection() as conn:
         return conn.execute(
