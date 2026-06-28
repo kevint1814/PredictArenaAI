@@ -1102,6 +1102,77 @@ _TEST_HOME = "Test United"
 _TEST_AWAY = "Mock City"
 
 
+async def cmd_kickoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin: manually trigger the kickoff reveal for a match that's already started.
+    Usage: /kickoff <match_id>
+    Use when the bot missed the kickoff moment (restart, Render sleep, etc.).
+    Locks predictions, sets status to live, posts the prediction reveal to the group.
+    """
+    if not is_admin(update.effective_user.id):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /kickoff <match_id>")
+        return
+
+    match_id = int(context.args[0])
+    match = db.get_match_by_id(match_id)
+    if not match:
+        await update.message.reply_text(f"❌ Match {match_id} not found.")
+        return
+    if match["predictions_revealed"]:
+        await update.message.reply_text(
+            "⚠️ Kickoff reveal already sent for this match.\n"
+            "If you still need to post it again, clear predictions_revealed in the DB first."
+        )
+        return
+
+    # Lock and move to live
+    db.lock_predictions_for_match(match_id)
+    db.update_match_status(match_id, "live")
+
+    predictions = db.get_predictions_for_match(match_id)
+    all_users   = db.get_all_users()
+    stage_label = STAGE_LABELS.get(match["stage"], match["stage"])
+    pred_by_uid = {p["user_id"]: p for p in predictions}
+    uses_score  = match_uses_score_prediction(match)
+
+    lines = [
+        f"🚀 *KICK OFF!*\n"
+        f"*{match['home_team']}* vs *{match['away_team']}*  |  {stage_label}\n\n"
+        f"📊 *Predictions:*"
+    ]
+    for user in all_users:
+        pred = pred_by_uid.get(user["id"])
+        if pred:
+            display = {"home": match["home_team"], "draw": "Draw", "away": match["away_team"]}[pred["prediction"]]
+            score_str = ""
+            if uses_score and pred["home_score_pred"] is not None:
+                score_str = f" _{pred['home_score_pred']}–{pred['away_score_pred']}_"
+            bonus_parts = []
+            if match["stage"] in KNOCKOUT_STAGES:
+                if pred.get("predicted_et") is not None:
+                    bonus_parts.append(f"ET: {'Yes ⏱' if pred['predicted_et'] == 1 else 'No ⚽'}")
+                if pred.get("predicted_pens") is not None:
+                    bonus_parts.append(f"Pens: {'Yes 🥅' if pred['predicted_pens'] == 1 else 'No ⚽'}")
+            bonus_str = (" | " + " | ".join(bonus_parts)) if bonus_parts else ""
+            lines.append(f"• {user['name']}: *{display}*{score_str}{bonus_str}")
+        else:
+            pen = STAGE_PENALTIES[match["stage"]]
+            lines.append(f"• {user['name']}: ❌ No prediction ({pen} pts penalty)")
+
+    import asyncio
+    from services.ai import commentary_for_kickoff
+    pred_list = [{"name": p["name"], "prediction": p["prediction"]} for p in predictions]
+    needle = await asyncio.to_thread(commentary_for_kickoff, match["home_team"], match["away_team"], pred_list)
+    if needle:
+        lines.append(f"\n💬 _{needle}_")
+
+    await context.bot.send_message(TELEGRAM_GROUP_ID, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    db.mark_predictions_revealed(match_id)
+    await update.message.reply_text(f"✅ Kickoff reveal posted for match {match_id}.")
+
+
 async def cmd_forcedm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Admin: immediately send prediction DMs for all upcoming matches in the next 48 hours,
@@ -1781,6 +1852,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("fixstages",    cmd_fixstages))
     app.add_handler(CommandHandler("regrade",      cmd_regrade))
     app.add_handler(CommandHandler("users",        cmd_users))
+    app.add_handler(CommandHandler("kickoff",      cmd_kickoff))
     app.add_handler(CommandHandler("forcedm",      cmd_forcedm))
     app.add_handler(CommandHandler("test",         cmd_test))
     app.add_handler(CommandHandler("testsuccess",  cmd_testsuccess))
