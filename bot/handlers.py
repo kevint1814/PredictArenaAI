@@ -1151,9 +1151,9 @@ async def cmd_kickoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 score_str = f" _{pred['home_score_pred']}–{pred['away_score_pred']}_"
             bonus_parts = []
             if match["stage"] in KNOCKOUT_STAGES:
-                if pred.get("predicted_et") is not None:
+                if pred["predicted_et"] is not None:
                     bonus_parts.append(f"ET: {'Yes ⏱' if pred['predicted_et'] == 1 else 'No ⚽'}")
-                if pred.get("predicted_pens") is not None:
+                if pred["predicted_pens"] is not None:
                     bonus_parts.append(f"Pens: {'Yes 🥅' if pred['predicted_pens'] == 1 else 'No ⚽'}")
             bonus_str = (" | " + " | ".join(bonus_parts)) if bonus_parts else ""
             lines.append(f"• {user['name']}: *{display}*{score_str}{bonus_str}")
