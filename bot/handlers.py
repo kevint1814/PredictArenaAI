@@ -887,7 +887,20 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
             return
 
-        db.update_match_status(match_id, "finished", home_score, away_score, stored_winner)
+        # A level score with an explicit winner means the match went to AET + pens.
+        # Infer the flags automatically so /setresult doubles as a regrade-after-api-race fix.
+        if winner_override is not None and home_score == away_score:
+            went_to_pens_upd: Optional[bool] = True
+            went_to_et_upd:   Optional[bool] = True
+        else:
+            went_to_pens_upd = None   # unknown — leave ET/pens bonuses as N/A
+            went_to_et_upd   = None
+
+        db.update_match_status(
+            match_id, "finished", home_score, away_score, stored_winner,
+            went_to_pens=went_to_pens_upd,
+            went_to_et=went_to_et_upd,
+        )
 
         from services.scoring import grade_match
         from services.ai import commentary_for_full_time
