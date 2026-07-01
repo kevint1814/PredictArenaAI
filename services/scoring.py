@@ -178,18 +178,30 @@ def grade_match(match_id: int) -> list[dict]:
         for result in results:
             uid  = result["user_id"]
             pred = pred_by_uid.get(uid)
-            if pred is None or pred["predicted_pens"] is None:
+
+            # Determine effective pens prediction:
+            # - Explicit: predicted_pens was answered (ET=Yes path)
+            # - Implicit: predicted_et == 0 (ET=No) → Pens=No is implicit,
+            #   since penalties are impossible without extra time
+            effective_pens = None
+            if pred is not None:
+                if pred["predicted_pens"] is not None:
+                    effective_pens = pred["predicted_pens"]
+                elif pred["predicted_et"] == 0:
+                    effective_pens = 0   # ET=No → implicit Pens=No
+
+            if pred is None or effective_pens is None:
                 db.set_pens_bonus(uid, match_id, 0)
                 result["pens_bonus"] = 0
                 result["pens_pred"]  = None
-            elif pred["predicted_pens"] == actual_pens:
+            elif effective_pens == actual_pens:
                 db.set_pens_bonus(uid, match_id, PENS_PREDICTION_BONUS)
                 result["pens_bonus"] = PENS_PREDICTION_BONUS
-                result["pens_pred"]  = pred["predicted_pens"]
+                result["pens_pred"]  = effective_pens
             else:
                 db.set_pens_bonus(uid, match_id, 0)
                 result["pens_bonus"] = 0
-                result["pens_pred"]  = pred["predicted_pens"]
+                result["pens_pred"]  = effective_pens
 
     db.mark_match_graded(match_id)
     logger.info("Graded match %d — %d users", match_id, len(results))

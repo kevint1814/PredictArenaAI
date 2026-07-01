@@ -252,7 +252,7 @@ class TestGradeMatchPensBonus:
         assert results[0]["pens_bonus"] == 0
 
     def test_et_no_means_pens_null_in_result(self, fresh_db):
-        """User said No ET → predicted_pens=None → pens_pred/pens_bonus still set (0)."""
+        """User said No ET → implicit Pens=No. Match didn't go to pens → pens bonus ✅."""
         uid = make_user(111, "Kevin")
         mid = make_match(stage="round_of_32", kickoff=FUTURE_KO)
         db.upsert_prediction(uid, mid, "home",
@@ -260,8 +260,8 @@ class TestGradeMatchPensBonus:
         _finish_match(mid, 2, 1, "home", went_to_pens=False, went_to_et=True)
         results = grade_match(mid)
         r = results[0]
-        assert r["pens_pred"] is None   # no pens prediction was made
-        assert r["pens_bonus"] == 0
+        assert r["pens_pred"] == 0     # implicit No (ET=No → Pens=No)
+        assert r["pens_bonus"] == 1    # correct — match didn't go to pens
 
     def test_all_bonuses_max_scenario(self, fresh_db):
         """

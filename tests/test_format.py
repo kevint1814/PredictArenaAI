@@ -132,16 +132,37 @@ class TestGroupStageBlock:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestKnockoutRegularBlock:
-    def test_correct_winner_et_not_run(self):
-        """went_to_et was False — et_bonus=0, et_pred=0."""
+    def test_correct_winner_et_no_pens_not_graded(self):
+        """ET=No predicted, pens grading not active for this match (pre-feature) → N/A."""
         r = _result(correct=True, points=2,
                     score_bonus=3, score_pred="2–0",
                     et_bonus=1, et_pred=0,
-                    pens_bonus=None)
+                    pens_bonus=None)   # pens not graded — pre-feature match
         block = format_player_block(r, _match("round_of_32"))
         assert "⏱ ET — No = +1 pt ✅" in block
-        assert "🥅 Pens = N/A" in block   # ET=No → pens N/A
+        assert "🥅 Pens = N/A" in block   # pens_bonus None → N/A
         assert "Total pts from this match: *+6*" in block
+
+    def test_et_no_implicit_pens_correct(self):
+        """ET=No predicted, match ended in 90 min — implicit Pens=No is ✅."""
+        r = _result(correct=True, points=2,
+                    score_bonus=3, score_pred="1–2",
+                    et_bonus=1, et_pred=0,
+                    pens_bonus=1, pens_pred=0)   # implicit No pens, graded correct
+        block = format_player_block(r, _match("round_of_32"))
+        assert "⏱ ET — No = +1 pt ✅" in block
+        assert "🥅 Pens — No = +1 pt ✅" in block
+        assert "Total pts from this match: *+7*" in block
+
+    def test_et_no_implicit_pens_wrong(self):
+        """ET=No predicted but match went to pens → ET ❌ and implicit Pens=No also ❌."""
+        r = _result(correct=True, points=2,
+                    score_bonus=0, score_pred="1–0",
+                    et_bonus=0, et_pred=0,    # said No ET but ET happened
+                    pens_bonus=0, pens_pred=0)  # implicit No pens, wrong (pens happened)
+        block = format_player_block(r, _match("round_of_32"))
+        assert "⏱ ET — No = 0 pts ❌" in block
+        assert "🥅 Pens — No = 0 pts ❌" in block
 
     def test_wrong_et_prediction_regular_time(self):
         """User said Yes ET but match finished 90 min → et wrong."""

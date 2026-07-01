@@ -121,12 +121,24 @@ def format_player_block(r: dict, match) -> str:
         else:
             lines.append("⏱ ET = N/A")
 
-        # Pens: N/A if user predicted ET=No (pens was never asked)
-        if et_pred == 0 or et_pred is None:
+        # Pens line
+        pens_bonus = r.get("pens_bonus")
+        pens_pred  = r.get("pens_pred")   # 0, 1, or None
+
+        if et_pred is None:
+            # No ET prediction at all (missed) — pens is always N/A
             lines.append("🥅 Pens = N/A")
+        elif et_pred == 0:
+            # ET=No predicted — implicit Pens=No; show result only if pens was graded
+            if pens_bonus is not None and pens_pred is not None:
+                if pens_bonus > 0:
+                    lines.append(f"🥅 Pens — No = +{pens_bonus} pt ✅")
+                else:
+                    lines.append(f"🥅 Pens — No = 0 pts ❌")
+            else:
+                lines.append("🥅 Pens = N/A")
         else:
-            pens_bonus = r.get("pens_bonus")
-            pens_pred  = r.get("pens_pred")   # 0, 1, or None
+            # ET=Yes predicted — show explicit pens answer
             if pens_bonus is not None and pens_pred is not None:
                 pens_val = "Yes" if pens_pred == 1 else "No"
                 if pens_bonus > 0:
