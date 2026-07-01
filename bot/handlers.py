@@ -1016,20 +1016,30 @@ async def cmd_fixstages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_regrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin: reverse previous grading and re-run with the stored result."""
+    """Admin: reverse previous grading and re-run with the stored result.
+    Usage: /regrade <match_id> [post]
+    Add 'post' to also send the corrected full-time announcement to the group.
+    """
     if not is_admin(update.effective_user.id):
         return
 
     args = context.args
     if not args:
-        await update.message.reply_text("Usage: `/regrade <match_id>`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            "Usage: `/regrade <match_id> [post]`\n"
+            "_Add_ `post` _to also send the corrected result to the group._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
         return
 
-    match_id = int(args[0])
+    match_id   = int(args[0])
+    should_post = len(args) > 1 and args[1].lower() == "post"
 
     if not db.is_match_graded(match_id):
         await update.message.reply_text(f"Match {match_id} hasn't been graded yet. Nothing to regrade.")
         return
+
+    match = db.get_match_by_id(match_id)
 
     # Reverse the previously applied score deltas, then re-grade cleanly
     db.reverse_grading_for_match(match_id)
@@ -1046,6 +1056,31 @@ async def cmd_regrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"✅ Regraded match {match_id}: {len(results)} users updated.\n"
         + "\n".join(f"  {r['name']}: {r['points']:+d}" for r in results)
     )
+
+    if should_post:
+        from services.ai import commentary_for_full_time
+        home_score = match["home_score"]
+        away_score = match["away_score"]
+        if match["went_to_pens"]:
+            suffix = " _(Pens)_"
+        elif match["went_to_et"]:
+            suffix = " _(AET)_"
+        elif match["winner"] and home_score == away_score:
+            suffix = " _(Pens)_"
+        else:
+            suffix = ""
+        commentary = commentary_for_full_time(
+            match["home_team"], match["away_team"], home_score, away_score, results
+        )
+        lines = [f"🏁 *FULL TIME*\n*{match['home_team']} {home_score}–{away_score} {match['away_team']}*{suffix}\n"]
+        for r in results:
+            lines.append(format_player_block(r, match))
+        if commentary:
+            lines.append(f"\n💬 _{commentary}_")
+        lines.append(f"\n{format_leaderboard(db.get_scores())}")
+        await context.bot.send_message(
+            TELEGRAM_GROUP_ID, "\n\n".join(lines), parse_mode=ParseMode.MARKDOWN
+        )
 
 
 async def cmd_matches(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
