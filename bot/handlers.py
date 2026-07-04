@@ -286,7 +286,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "  _Use underscores for spaces in team names, e.g._ `Saudi_Arabia`\n"
             "*/syncmatches* — Pull WC fixtures from football-data.org\n"
             "*/fixstages* — Re-fetch & correct match stages (use after round transitions)\n"
-            "*/setresult* `<match_id> <home_score> <away_score> [home|away]` — Set result; add winner for knockout AET/pens\n"
+            "*/setresult* `<match_id> <home_score> <away_score> [home|away] [pens|aet|reg]` — Set result; add winner for level scores; add pens/aet/reg to fix ET flags\n"
             "*/regrade* `<match_id>` — Reverse and re-run grading\n"
             "*/users* — List registered users\n"
         )
@@ -828,8 +828,15 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         match_id   = int(args[0])
         home_score = int(args[1])
         away_score = int(args[2])
-        # Optional winner override — required for knockout matches ending level at 90 min
-        winner_override = args[3].lower() if len(args) >= 4 else None
+        # Optional args after the score: [home|away] [pens|aet|reg]
+        # Order doesn't matter — parsed by value, not position.
+        winner_override = None
+        duration_flag   = None   # 'pens' | 'aet' | 'reg'
+        for _arg in args[3:]:
+            if _arg.lower() in ("home", "away"):
+                winner_override = _arg.lower()
+            elif _arg.lower() in ("pens", "aet", "reg"):
+                duration_flag = _arg.lower()
         if winner_override and winner_override not in ("home", "away"):
             await update.message.reply_text("Winner must be `home` or `away`.", parse_mode=ParseMode.MARKDOWN)
             return
@@ -899,14 +906,26 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
             return
 
-        # A level score with an explicit winner means the match went to AET + pens.
-        # Infer the flags automatically so /setresult doubles as a regrade-after-api-race fix.
-        if winner_override is not None and home_score == away_score:
+        # Determine went_to_et / went_to_pens to store.
+        # Explicit flag wins; then infer from level score + winner; then preserve DB value.
+        if duration_flag == "pens":
             went_to_pens_upd: Optional[bool] = True
             went_to_et_upd:   Optional[bool] = True
+        elif duration_flag == "aet":
+            went_to_pens_upd = False
+            went_to_et_upd   = True
+        elif duration_flag == "reg":
+            went_to_pens_upd = False
+            went_to_et_upd   = False
+        elif winner_override is not None and home_score == away_score:
+            # Level score + explicit winner → definitely pens
+            went_to_pens_upd = True
+            went_to_et_upd   = True
         else:
-            went_to_pens_upd = None   # unknown — leave ET/pens bonuses as N/A
-            went_to_et_upd   = None
+            # No flag, no inference — preserve whatever is already in the DB
+            # so correcting a score doesn't accidentally wipe ET/pens flags.
+            went_to_pens_upd = match["went_to_pens"]
+            went_to_et_upd   = match["went_to_et"]
 
         db.update_match_status(
             match_id, "finished", home_score, away_score, stored_winner,
