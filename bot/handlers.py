@@ -944,7 +944,12 @@ async def cmd_setresult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         commentary = commentary_for_full_time(
             match["home_team"], match["away_team"], home_score, away_score, results
         )
-        suffix = " _(Pens)_" if stored_winner and home_score == away_score else ""
+        if went_to_pens_upd:
+            suffix = " _(Pens)_"
+        elif went_to_et_upd:
+            suffix = " _(AET)_"
+        else:
+            suffix = ""
         lines = [f"🏁 *FULL TIME*\n*{match['home_team']} {home_score}–{away_score} {match['away_team']}*{suffix}\n"]
         for r in results:
             lines.append(format_player_block(r, match))
