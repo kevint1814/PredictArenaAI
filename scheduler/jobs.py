@@ -318,6 +318,11 @@ async def job_check_results(context: ContextTypes.DEFAULT_TYPE) -> None:
     Handles multiple matches finishing simultaneously.
 
     Runs every 3 minutes — very gentle on the free tier (10 calls/min limit).
+
+    Race-condition guard: football-data.org sometimes reports FINISHED/EXTRA_TIME before
+    updating to PENALTY_SHOOTOUT. When we see ET-but-not-pens, we hold off grading for
+    10 minutes. If the API updates to PENALTY_SHOOTOUT in the next poll, we grade correctly.
+    If 10 minutes pass and it's still EXTRA_TIME, we grade as AET without pens.
     """
     live_matches = db.get_live_matches()
     if not live_matches:
@@ -326,6 +331,10 @@ async def job_check_results(context: ContextTypes.DEFAULT_TYPE) -> None:
     from services.football import get_match_result
     from services.scoring import grade_match
     from services.ai import commentary_for_full_time
+
+    # In-memory hold: {str(match_id): datetime first seen as ET-finished}
+    # Survives restarts only if the bot is up — acceptable trade-off.
+    et_pending: dict = context.application.bot_data.setdefault("et_pens_pending", {})
 
     for match in live_matches:
         if db.is_match_graded(match["id"]):
@@ -350,6 +359,37 @@ async def job_check_results(context: ContextTypes.DEFAULT_TYPE) -> None:
             if home_score is None or away_score is None:
                 continue
 
+            went_to_et   = bool(result.get("went_to_et"))
+            went_to_pens = bool(result.get("went_to_pens"))
+            mid_key      = str(match["id"])
+
+            # ── ET race-condition guard ──────────────────────────────────────────
+            # API sometimes shows EXTRA_TIME for a few minutes before settling on
+            # PENALTY_SHOOTOUT. Hold for up to 10 minutes to let it update.
+            if went_to_et and not went_to_pens:
+                if mid_key not in et_pending:
+                    et_pending[mid_key] = datetime.now(timezone.utc)
+                    logger.info(
+                        "Match %d: finished in ET — holding 10 min for pens API update",
+                        match["id"]
+                    )
+                    continue   # don't grade yet — check again next poll
+                elapsed = (datetime.now(timezone.utc) - et_pending[mid_key]).total_seconds()
+                if elapsed < 600:
+                    logger.info(
+                        "Match %d: ET hold — %ds elapsed, still waiting...",
+                        match["id"], int(elapsed)
+                    )
+                    continue
+                # 10-minute hold expired — grade as AET without pens
+                logger.info(
+                    "Match %d: ET hold expired (%.0fs) — grading as AET, no pens confirmed",
+                    match["id"], elapsed
+                )
+
+            # Clear hold — either pens confirmed, hold expired, or not an ET match
+            et_pending.pop(mid_key, None)
+
             logger.info("Result confirmed: %s %d–%d %s",
                         match["home_team"], home_score, away_score, match["away_team"])
 
@@ -357,8 +397,8 @@ async def job_check_results(context: ContextTypes.DEFAULT_TYPE) -> None:
                 match["id"], "finished",
                 home_score, away_score,
                 result.get("winner"),
-                result.get("went_to_pens"),
-                result.get("went_to_et"),
+                went_to_pens,
+                went_to_et,
             )
             results = grade_match(match["id"])
 
